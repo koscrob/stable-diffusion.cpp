@@ -18,7 +18,6 @@
 /* Win32, DOS, MSVC, MSVS */
 #include <direct.h>
 
-#define STRCLONE(STR) ((STR) ? _strdup(STR) : NULL)
 #define HAS_DEVICE(P)                                                          \
   ((((P)[0] >= 'A' && (P)[0] <= 'Z') || ((P)[0] >= 'a' && (P)[0] <= 'z')) &&   \
    (P)[1] == ':')
@@ -27,7 +26,6 @@
 #else
 
 #include <unistd.h> // needed for symlink()
-#define STRCLONE(STR) ((STR) ? strdup(STR) : NULL)
 
 #endif
 
@@ -36,7 +34,6 @@
 #include <unistd.h>
 #endif
 
-#define USE_EXTERNAL_MZCRC
 #include "miniz.h"
 #include "zip.h"
 
@@ -88,7 +85,7 @@ struct zip_entry_t {
   mz_uint64 uncomp_size;
   mz_uint64 comp_size;
   mz_uint32 uncomp_crc32;
-  mz_uint64 offset;
+  mz_uint64 dir_offset;
   mz_uint8 header[MZ_ZIP_LOCAL_DIR_HEADER_SIZE];
   mz_uint64 header_offset;
   mz_uint16 method;
@@ -117,7 +114,7 @@ struct zip_entry_mark_t {
   size_t lf_length;
 };
 
-static const char *const zip_errlist[33] = {
+static const char *const zip_errlist[35] = {
     NULL,
     "not initialized\0",
     "invalid entry name\0",
@@ -151,6 +148,8 @@ static const char *const zip_errlist[33] = {
     "cannot initialize reader\0",
     "cannot initialize writer\0",
     "cannot initialize writer from reader\0",
+    "invalid argument\0",
+    "cannot initialize reader iterator\0",
 };
 
 const char *zip_strerror(int errnum) {
@@ -216,6 +215,22 @@ static int zip_mkpath(char *path) {
   return 0;
 }
 
+static char *zip_strclone(const char *str, size_t n) {
+  char c;
+  size_t i;
+  char *rpl = (char *)calloc((1 + n), sizeof(char));
+  char *begin = rpl;
+  if (!rpl) {
+    return NULL;
+  }
+
+  for (i = 0; (i < n) && (c = *str++); ++i) {
+    *rpl++ = c;
+  }
+
+  return begin;
+}
+
 static char *zip_strrpl(const char *str, size_t n, char oldchar, char newchar) {
   char c;
   size_t i;
@@ -235,55 +250,51 @@ static char *zip_strrpl(const char *str, size_t n, char oldchar, char newchar) {
   return begin;
 }
 
+static inline int zip_strchr_match(const char *const str, size_t len, char c) {
+  size_t i;
+  for (i = 0; i < len; ++i) {
+    if (str[i] != c) {
+      return 0;
+    }
+  }
+
+  return 1;
+}
+
 static char *zip_name_normalize(char *name, char *const nname, size_t len) {
-  size_t offn = 0;
-  size_t offnn = 0, ncpy = 0;
+  size_t offn = 0, ncpy = 0;
+  char c;
 
   if (name == NULL || nname == NULL || len <= 0) {
     return NULL;
   }
   // skip trailing '/'
-  while (ISSLASH(*name))
+  while (ISSLASH(*name)) {
     name++;
+  }
 
-  for (; offn < len; offn++) {
-    if (ISSLASH(name[offn])) {
-      if (ncpy > 0 && strcmp(&nname[offnn], ".\0") &&
-          strcmp(&nname[offnn], "..\0")) {
-        offnn += ncpy;
-        nname[offnn++] = name[offn]; // append '/'
+  while ((c = *name++)) {
+    if (ISSLASH(c)) {
+      if (ncpy > 0 && !zip_strchr_match(&nname[offn], ncpy, '.')) {
+        offn += ncpy;
+        nname[offn++] = c; // append '/'
       }
       ncpy = 0;
     } else {
-      nname[offnn + ncpy] = name[offn];
-      ncpy++;
+      nname[offn + ncpy] = c;
+      if (c) {
+        ncpy++;
+      }
     }
   }
 
-  // at the end, extra check what we've already copied
-  if (ncpy == 0 || !strcmp(&nname[offnn], ".\0") ||
-      !strcmp(&nname[offnn], "..\0")) {
-    nname[offnn] = 0;
+  if (!zip_strchr_match(&nname[offn], ncpy, '.')) {
+    nname[offn + ncpy] = '\0';
+  } else {
+    nname[offn] = '\0';
   }
+
   return nname;
-}
-
-static mz_bool zip_name_match(const char *name1, const char *name2) {
-  char *nname2 = NULL;
-
-#ifdef ZIP_RAW_ENTRYNAME
-  nname2 = STRCLONE(name2);
-#else
-  nname2 = zip_strrpl(name2, strlen(name2), '\\', '/');
-#endif
-
-  if (!nname2) {
-    return MZ_FALSE;
-  }
-
-  mz_bool res = (strcmp(name1, nname2) == 0) ? MZ_TRUE : MZ_FALSE;
-  CLEANUP(nname2);
-  return res;
 }
 
 static int zip_archive_truncate(mz_zip_archive *pzip) {
@@ -295,7 +306,7 @@ static int zip_archive_truncate(mz_zip_archive *pzip) {
   if (pzip->m_zip_mode == MZ_ZIP_MODE_WRITING_HAS_BEEN_FINALIZED) {
     if (pState->m_pFile) {
       int fd = fileno(pState->m_pFile);
-      return ftruncate(fd, file_size);
+      return ftruncate(fd, pState->m_file_archive_start_ofs + file_size);
     }
   }
   return 0;
@@ -326,7 +337,7 @@ static int zip_archive_extract(mz_zip_archive *zip_archive, const char *dir,
 #if defined(_MSC_VER)
   strcpy_s(path, MZ_ZIP_MAX_ARCHIVE_FILENAME_SIZE, dir);
 #else
-  strcpy(path, dir);
+  strncpy(path, dir, MZ_ZIP_MAX_ARCHIVE_FILENAME_SIZE);
 #endif
 
   if (!ISSLASH(path[dirlen - 1])) {
@@ -373,8 +384,8 @@ static int zip_archive_extract(mz_zip_archive *zip_archive, const char *dir,
           19)) // if zip is produced on Unix or macOS (3 and 19 from
                // section 4.4.2.2 of zip standard)
         && info.m_external_attr &
-               (0x20 << 24)) { // and has sym link attribute (0x80 is file, 0x40
-                               // is directory)
+               (0x20 << 24)) { // and has sym link attribute (0x80 is file,
+                               // 0x40 is directory)
 #if defined(_WIN32) || defined(__WIN32__) || defined(_MSC_VER) ||              \
     defined(__MINGW32__)
 #else
@@ -436,9 +447,9 @@ static inline void zip_archive_finalize(mz_zip_archive *pzip) {
 
 static ssize_t zip_entry_mark(struct zip_t *zip,
                               struct zip_entry_mark_t *entry_mark,
-                              const ssize_t n, char *const entries[],
+                              const size_t n, char *const entries[],
                               const size_t len) {
-  ssize_t i = 0;
+  size_t i = 0;
   ssize_t err = 0;
   if (!zip || !entry_mark || !entries) {
     return ZIP_ENOINIT;
@@ -455,7 +466,7 @@ static ssize_t zip_entry_mark(struct zip_t *zip,
     {
       size_t j;
       for (j = 0; j < len; ++j) {
-        if (zip_name_match(zip->entry.name, entries[j])) {
+        if (strcmp(zip->entry.name, entries[j]) == 0) {
           name_matches = MZ_TRUE;
           break;
         }
@@ -467,7 +478,7 @@ static ssize_t zip_entry_mark(struct zip_t *zip,
       entry_mark[i].type = MZ_KEEP;
     }
 
-    if (!mz_zip_reader_file_stat(&zip->archive, i, &file_stat)) {
+    if (!mz_zip_reader_file_stat(&zip->archive, (mz_uint)i, &file_stat)) {
       return ZIP_ENOENT;
     }
 
@@ -491,6 +502,62 @@ static ssize_t zip_entry_mark(struct zip_t *zip,
   return err;
 }
 
+static ssize_t zip_entry_markbyindex(struct zip_t *zip,
+                                     struct zip_entry_mark_t *entry_mark,
+                                     const size_t n, size_t entries[],
+                                     const size_t len) {
+  size_t i = 0;
+  ssize_t err = 0;
+  if (!zip || !entry_mark || !entries) {
+    return ZIP_ENOINIT;
+  }
+
+  mz_zip_archive_file_stat file_stat;
+  mz_uint64 d_pos = UINT64_MAX;
+  for (i = 0; i < n; ++i) {
+    if ((err = zip_entry_openbyindex(zip, i))) {
+      return (ssize_t)err;
+    }
+
+    mz_bool matches = MZ_FALSE;
+    {
+      size_t j;
+      for (j = 0; j < len; ++j) {
+        if (i == entries[j]) {
+          matches = MZ_TRUE;
+          break;
+        }
+      }
+    }
+    if (matches) {
+      entry_mark[i].type = MZ_DELETE;
+    } else {
+      entry_mark[i].type = MZ_KEEP;
+    }
+
+    if (!mz_zip_reader_file_stat(&zip->archive, (mz_uint)i, &file_stat)) {
+      return ZIP_ENOENT;
+    }
+
+    zip_entry_close(zip);
+
+    entry_mark[i].m_local_header_ofs = file_stat.m_local_header_ofs;
+    entry_mark[i].file_index = (ssize_t)-1;
+    entry_mark[i].lf_length = 0;
+    if ((entry_mark[i].type) == MZ_DELETE &&
+        (d_pos > entry_mark[i].m_local_header_ofs)) {
+      d_pos = entry_mark[i].m_local_header_ofs;
+    }
+  }
+
+  for (i = 0; i < n; ++i) {
+    if ((entry_mark[i].m_local_header_ofs > d_pos) &&
+        (entry_mark[i].type != MZ_DELETE)) {
+      entry_mark[i].type = MZ_MOVE;
+    }
+  }
+  return err;
+}
 static ssize_t zip_index_next(mz_uint64 *local_header_ofs_array,
                               ssize_t cur_index) {
   ssize_t new_index = 0, i;
@@ -531,9 +598,8 @@ static int zip_index_update(struct zip_entry_mark_t *entry_mark,
 
 static int zip_entry_finalize(struct zip_t *zip,
                               struct zip_entry_mark_t *entry_mark,
-                              const ssize_t n) {
-
-  ssize_t i = 0;
+                              const size_t n) {
+  size_t i = 0;
   mz_uint64 *local_header_ofs_array = (mz_uint64 *)calloc(n, sizeof(mz_uint64));
   if (!local_header_ofs_array) {
     return ZIP_EOOMEM;
@@ -543,7 +609,7 @@ static int zip_entry_finalize(struct zip_t *zip,
     local_header_ofs_array[i] = entry_mark[i].m_local_header_ofs;
     ssize_t index = zip_sort(local_header_ofs_array, i);
 
-    if (index != i) {
+    if ((size_t)index != i) {
       zip_index_update(entry_mark, i, index);
     }
     entry_mark[i].file_index = index;
@@ -571,7 +637,7 @@ static int zip_entry_finalize(struct zip_t *zip,
 }
 
 static ssize_t zip_entry_set(struct zip_t *zip,
-                             struct zip_entry_mark_t *entry_mark, ssize_t n,
+                             struct zip_entry_mark_t *entry_mark, size_t n,
                              char *const entries[], const size_t len) {
   ssize_t err = 0;
 
@@ -582,6 +648,50 @@ static ssize_t zip_entry_set(struct zip_t *zip,
     return err;
   }
   return 0;
+}
+
+static ssize_t zip_entry_setbyindex(struct zip_t *zip,
+                                    struct zip_entry_mark_t *entry_mark,
+                                    size_t n, size_t entries[],
+                                    const size_t len) {
+  ssize_t err = 0;
+
+  if ((err = zip_entry_markbyindex(zip, entry_mark, n, entries, len)) < 0) {
+    return err;
+  }
+  if ((err = zip_entry_finalize(zip, entry_mark, n)) < 0) {
+    return err;
+  }
+  return 0;
+}
+
+static ssize_t zip_mem_move(void *pBuf, size_t bufSize, const mz_uint64 to,
+                            const mz_uint64 from, const size_t length) {
+  uint8_t *dst = NULL, *src = NULL, *end = NULL;
+
+  if (!pBuf) {
+    return ZIP_EINVIDX;
+  }
+
+  end = (uint8_t *)pBuf + bufSize;
+
+  if (to > bufSize) {
+    return ZIP_EINVIDX;
+  }
+
+  if (from > bufSize) {
+    return ZIP_EINVIDX;
+  }
+
+  dst = (uint8_t *)pBuf + to;
+  src = (uint8_t *)pBuf + from;
+
+  if (((dst + length) > end) || ((src + length) > end)) {
+    return ZIP_EINVIDX;
+  }
+
+  memmove(dst, src, length);
+  return length;
 }
 
 static ssize_t zip_file_move(MZ_FILE *m_pFile, const mz_uint64 to,
@@ -605,10 +715,12 @@ static ssize_t zip_file_move(MZ_FILE *m_pFile, const mz_uint64 to,
   return (ssize_t)length;
 }
 
-static ssize_t zip_files_move(MZ_FILE *m_pFile, mz_uint64 writen_num,
+static ssize_t zip_files_move(struct zip_t *zip, mz_uint64 writen_num,
                               mz_uint64 read_num, size_t length) {
   ssize_t n = 0;
   const size_t page_size = 1 << 12; // 4K
+  mz_zip_internal_state *pState = zip->archive.m_pState;
+
   mz_uint8 *move_buf = (mz_uint8 *)calloc(1, page_size);
   if (!move_buf) {
     return ZIP_EOOMEM;
@@ -618,8 +730,17 @@ static ssize_t zip_files_move(MZ_FILE *m_pFile, mz_uint64 writen_num,
   ssize_t move_count = 0;
   while ((mz_int64)length > 0) {
     move_count = (length >= page_size) ? page_size : length;
-    n = zip_file_move(m_pFile, writen_num, read_num, move_count, move_buf,
-                      page_size);
+
+    if (pState->m_pFile) {
+      n = zip_file_move(pState->m_pFile, writen_num, read_num, move_count,
+                        move_buf, page_size);
+    } else if (pState->m_pMem) {
+      n = zip_mem_move(pState->m_pMem, pState->m_mem_size, writen_num, read_num,
+                       move_count);
+    } else {
+      return ZIP_ENOFILE;
+    }
+
     if (n < 0) {
       moved_length = n;
       goto cleanup;
@@ -761,9 +882,11 @@ static ssize_t zip_entries_delete_mark(struct zip_t *zip,
   mz_zip_internal_state *pState = zip->archive.m_pState;
   zip->archive.m_zip_mode = MZ_ZIP_MODE_WRITING;
 
-  if ((!pState->m_pFile) || MZ_FSEEK64(pState->m_pFile, 0, SEEK_SET)) {
-    CLEANUP(deleted_entry_flag_array);
-    return ZIP_ENOENT;
+  if (pState->m_pFile) {
+    if (MZ_FSEEK64(pState->m_pFile, 0, SEEK_SET)) {
+      CLEANUP(deleted_entry_flag_array);
+      return ZIP_ENOENT;
+    }
   }
 
   while (i < entry_num) {
@@ -796,7 +919,7 @@ static ssize_t zip_entries_delete_mark(struct zip_t *zip,
       i++;
     }
 
-    n = zip_files_move(pState->m_pFile, writen_num, read_num, move_length);
+    n = zip_files_move(zip, writen_num, read_num, move_length);
     if (n != (ssize_t)move_length) {
       CLEANUP(deleted_entry_flag_array);
       return n;
@@ -847,6 +970,7 @@ struct zip_t *zip_openwitherror(const char *zipname, int level, char mode,
   }
 
   zip->level = (mz_uint)level;
+  zip->entry.index = -1;
   switch (mode) {
   case 'w':
     // Create a new archive.
@@ -870,24 +994,30 @@ struct zip_t *zip_openwitherror(const char *zipname, int level, char mode,
     break;
 
   case 'a':
-  case 'd':
-    if (!mz_zip_reader_init_file_v2_rpb(
-            &(zip->archive), zipname,
-            zip->level | MZ_ZIP_FLAG_DO_NOT_SORT_CENTRAL_DIRECTORY, 0, 0)) {
-      // An archive file does not exist or cannot initialize
-      // zip_archive reader
-      *errnum = ZIP_ERINIT;
+  case 'd': {
+    MZ_FILE *fp = MZ_FOPEN(zipname, "r+b");
+    if (!fp) {
+      *errnum = ZIP_EOPNFILE;
       goto cleanup;
     }
-    if ((mode == 'a' || mode == 'd')) {
-      if (!mz_zip_writer_init_from_reader_v2_noreopen(&(zip->archive), zipname,
-                                                      0)) {
-        *errnum = ZIP_EWRINIT;
-        mz_zip_reader_end(&(zip->archive));
-        goto cleanup;
-      }
+    if (!mz_zip_reader_init_cfile(
+            &(zip->archive), fp, 0,
+            zip->level | MZ_ZIP_FLAG_DO_NOT_SORT_CENTRAL_DIRECTORY)) {
+      // An archive file does not exist or cannot initialize zip_archive
+      // reader
+      *errnum = ZIP_ERINIT;
+      fclose(fp);
+      goto cleanup;
     }
-    break;
+    if (!mz_zip_writer_init_from_reader_v2(&(zip->archive), zipname, 0)) {
+      *errnum = ZIP_EWRINIT;
+      fclose(fp);
+      mz_zip_reader_end(&(zip->archive));
+      goto cleanup;
+    }
+    // The file pointer is now owned by the archive object.
+    zip->archive.m_zip_type = MZ_ZIP_TYPE_FILE;
+  } break;
 
   default:
     *errnum = ZIP_EINVMODE;
@@ -932,6 +1062,16 @@ int zip_is64(struct zip_t *zip) {
   return (int)zip->archive.m_pState->m_zip64;
 }
 
+int zip_offset(struct zip_t *zip, uint64_t *offset) {
+  if (!zip || !zip->archive.m_pState) {
+    // zip_t handler or zip state is not initialized
+    return ZIP_ENOINIT;
+  }
+
+  *offset = mz_zip_get_archive_file_start_offset(&zip->archive);
+  return 0;
+}
+
 static int _zip_entry_open(struct zip_t *zip, const char *entryname,
                            int case_sensitive) {
   size_t entrylen = 0;
@@ -959,33 +1099,18 @@ static int _zip_entry_open(struct zip_t *zip, const char *entryname,
     return ZIP_EINVENTNAME;
   }
 
-  /*
-    .ZIP File Format Specification Version: 6.3.3
-
-    4.4.17.1 The name of the file, with optional relative path.
-    The path stored MUST not contain a drive or
-    device letter, or a leading slash.  All slashes
-    MUST be forward slashes '/' as opposed to
-    backwards slashes '\' for compatibility with Amiga
-    and UNIX file systems etc.  If input came from standard
-    input, there is no file name field.
-  */
   if (zip->entry.name) {
     CLEANUP(zip->entry.name);
-  }
-#ifdef ZIP_RAW_ENTRYNAME
-  zip->entry.name = STRCLONE(entryname);
-#else
-  zip->entry.name = zip_strrpl(entryname, entrylen, '\\', '/');
-#endif
-
-  if (!zip->entry.name) {
-    // Cannot parse zip entry name
-    return ZIP_EINVENTNAME;
   }
 
   pzip = &(zip->archive);
   if (pzip->m_zip_mode == MZ_ZIP_MODE_READING) {
+    zip->entry.name = zip_strclone(entryname, entrylen);
+    if (!zip->entry.name) {
+      // Cannot parse zip entry name
+      return ZIP_EINVENTNAME;
+    }
+
     zip->entry.index = (ssize_t)mz_zip_reader_locate_file(
         pzip, zip->entry.name, NULL,
         case_sensitive ? MZ_ZIP_FLAG_CASE_SENSITIVE : 0);
@@ -1002,7 +1127,7 @@ static int _zip_entry_open(struct zip_t *zip, const char *entryname,
     zip->entry.comp_size = stats.m_comp_size;
     zip->entry.uncomp_size = stats.m_uncomp_size;
     zip->entry.uncomp_crc32 = stats.m_crc32;
-    zip->entry.offset = stats.m_central_dir_ofs;
+    zip->entry.dir_offset = stats.m_central_dir_ofs;
     zip->entry.header_offset = stats.m_local_header_ofs;
     zip->entry.method = stats.m_method;
     zip->entry.external_attr = stats.m_external_attr;
@@ -1013,13 +1138,30 @@ static int _zip_entry_open(struct zip_t *zip, const char *entryname,
     return 0;
   }
 
+  /*
+    .ZIP File Format Specification Version: 6.3.3
+
+    4.4.17.1 The name of the file, with optional relative path.
+    The path stored MUST not contain a drive or
+    device letter, or a leading slash.  All slashes
+    MUST be forward slashes '/' as opposed to
+    backwards slashes '\' for compatibility with Amiga
+    and UNIX file systems etc.  If input came from standard
+    input, there is no file name field.
+  */
+  zip->entry.name = zip_strrpl(entryname, entrylen, '\\', '/');
+  if (!zip->entry.name) {
+    // Cannot parse zip entry name
+    return ZIP_EINVENTNAME;
+  }
+
   level = zip->level & 0xF;
 
   zip->entry.index = (ssize_t)zip->archive.m_total_files;
   zip->entry.comp_size = 0;
   zip->entry.uncomp_size = 0;
   zip->entry.uncomp_crc32 = MZ_CRC32_INIT;
-  zip->entry.offset = zip->archive.m_archive_size;
+  zip->entry.dir_offset = zip->archive.m_archive_size;
   zip->entry.header_offset = zip->archive.m_archive_size;
   memset(zip->entry.header, 0, MZ_ZIP_LOCAL_DIR_HEADER_SIZE * sizeof(mz_uint8));
   zip->entry.method = level ? MZ_DEFLATED : 0;
@@ -1046,7 +1188,7 @@ static int _zip_entry_open(struct zip_t *zip, const char *entryname,
     goto cleanup;
   }
 
-  if (!mz_zip_writer_write_zeros(pzip, zip->entry.offset,
+  if (!mz_zip_writer_write_zeros(pzip, zip->entry.dir_offset,
                                  num_alignment_padding_bytes)) {
     // Cannot memset zip entry header
     err = ZIP_EMEMSET;
@@ -1076,7 +1218,8 @@ static int _zip_entry_open(struct zip_t *zip, const char *entryname,
     goto cleanup;
   }
 
-  zip->entry.header_offset = zip->entry.offset + num_alignment_padding_bytes;
+  zip->entry.header_offset =
+      zip->entry.dir_offset + num_alignment_padding_bytes;
 
   if (pzip->m_pWrite(pzip->m_pIO_opaque, zip->entry.header_offset,
                      zip->entry.header,
@@ -1090,28 +1233,29 @@ static int _zip_entry_open(struct zip_t *zip, const char *entryname,
     MZ_ASSERT(
         (zip->entry.header_offset & (pzip->m_file_offset_alignment - 1)) == 0);
   }
-  zip->entry.offset += num_alignment_padding_bytes + sizeof(zip->entry.header);
+  zip->entry.dir_offset +=
+      num_alignment_padding_bytes + sizeof(zip->entry.header);
 
-  if (pzip->m_pWrite(pzip->m_pIO_opaque, zip->entry.offset, zip->entry.name,
+  if (pzip->m_pWrite(pzip->m_pIO_opaque, zip->entry.dir_offset, zip->entry.name,
                      entrylen) != entrylen) {
     // Cannot write data to zip entry
     err = ZIP_EWRTENT;
     goto cleanup;
   }
 
-  zip->entry.offset += entrylen;
+  zip->entry.dir_offset += entrylen;
 
-  if (pzip->m_pWrite(pzip->m_pIO_opaque, zip->entry.offset, extra_data,
+  if (pzip->m_pWrite(pzip->m_pIO_opaque, zip->entry.dir_offset, extra_data,
                      extra_size) != extra_size) {
     // Cannot write ZIP64 data to zip entry
     err = ZIP_EWRTENT;
     goto cleanup;
   }
-  zip->entry.offset += extra_size;
+  zip->entry.dir_offset += extra_size;
 
   if (level) {
     zip->entry.state.m_pZip = pzip;
-    zip->entry.state.m_cur_archive_file_ofs = zip->entry.offset;
+    zip->entry.state.m_cur_archive_file_ofs = zip->entry.dir_offset;
     zip->entry.state.m_comp_size = 0;
 
     if (tdefl_init(&(zip->entry.comp), mz_zip_writer_add_put_buf_callback,
@@ -1174,26 +1318,11 @@ int zip_entry_openbyindex(struct zip_t *zip, size_t index) {
   namelen = MZ_READ_LE16(pHeader + MZ_ZIP_CDH_FILENAME_LEN_OFS);
   pFilename = (const char *)pHeader + MZ_ZIP_CENTRAL_DIR_HEADER_SIZE;
 
-  /*
-    .ZIP File Format Specification Version: 6.3.3
-
-    4.4.17.1 The name of the file, with optional relative path.
-    The path stored MUST not contain a drive or
-    device letter, or a leading slash.  All slashes
-    MUST be forward slashes '/' as opposed to
-    backwards slashes '\' for compatibility with Amiga
-    and UNIX file systems etc.  If input came from standard
-    input, there is no file name field.
-  */
   if (zip->entry.name) {
     CLEANUP(zip->entry.name);
   }
-#ifdef ZIP_RAW_ENTRYNAME
-  zip->entry.name = STRCLONE(pFilename);
-#else
-  zip->entry.name = zip_strrpl(pFilename, namelen, '\\', '/');
-#endif
 
+  zip->entry.name = zip_strclone(pFilename, namelen);
   if (!zip->entry.name) {
     // local entry name is NULL
     return ZIP_EINVENTNAME;
@@ -1207,7 +1336,7 @@ int zip_entry_openbyindex(struct zip_t *zip, size_t index) {
   zip->entry.comp_size = stats.m_comp_size;
   zip->entry.uncomp_size = stats.m_uncomp_size;
   zip->entry.uncomp_crc32 = stats.m_crc32;
-  zip->entry.offset = stats.m_central_dir_ofs;
+  zip->entry.dir_offset = stats.m_central_dir_ofs;
   zip->entry.header_offset = stats.m_local_header_ofs;
   zip->entry.method = stats.m_method;
   zip->entry.external_attr = stats.m_external_attr;
@@ -1251,7 +1380,7 @@ int zip_entry_close(struct zip_t *zip) {
       goto cleanup;
     }
     zip->entry.comp_size = zip->entry.state.m_comp_size;
-    zip->entry.offset = zip->entry.state.m_cur_archive_file_ofs;
+    zip->entry.dir_offset = zip->entry.state.m_cur_archive_file_ofs;
     zip->entry.method = MZ_DEFLATED;
   }
 
@@ -1265,13 +1394,14 @@ int zip_entry_close(struct zip_t *zip) {
   MZ_WRITE_LE64(local_dir_footer + 8, zip->entry.comp_size);
   MZ_WRITE_LE64(local_dir_footer + 16, zip->entry.uncomp_size);
 
-  if (pzip->m_pWrite(pzip->m_pIO_opaque, zip->entry.offset, local_dir_footer,
+  if (pzip->m_pWrite(pzip->m_pIO_opaque, zip->entry.dir_offset,
+                     local_dir_footer,
                      local_dir_footer_size) != local_dir_footer_size) {
     // Cannot write zip entry header
     err = ZIP_EWRTHDR;
     goto cleanup;
   }
-  zip->entry.offset += local_dir_footer_size;
+  zip->entry.dir_offset += local_dir_footer_size;
 
   pExtra_data = extra_data;
   extra_size = mz_zip_writer_create_zip64_extra_data(
@@ -1282,7 +1412,7 @@ int zip_entry_close(struct zip_t *zip) {
       (zip->entry.header_offset >= MZ_UINT32_MAX) ? &zip->entry.header_offset
                                                   : NULL);
 
-  if ((entrylen) && (zip->entry.name[entrylen - 1] == '/') &&
+  if ((entrylen) && ISSLASH(zip->entry.name[entrylen - 1]) &&
       !zip->entry.uncomp_size) {
     /* Set DOS Subdirectory attribute bit. */
     zip->entry.external_attr |= MZ_ZIP_DOS_DIR_ATTRIBUTE_BITFLAG;
@@ -1302,11 +1432,12 @@ int zip_entry_close(struct zip_t *zip) {
   }
 
   pzip->m_total_files++;
-  pzip->m_archive_size = zip->entry.offset;
+  pzip->m_archive_size = zip->entry.dir_offset;
 
 cleanup:
   if (zip) {
     zip->entry.m_time = 0;
+    zip->entry.index = -1;
     CLEANUP(zip->entry.name);
   }
   return err;
@@ -1317,7 +1448,6 @@ const char *zip_entry_name(struct zip_t *zip) {
     // zip_t handler is not initialized
     return NULL;
   }
-
   return zip->entry.name;
 }
 
@@ -1331,6 +1461,7 @@ ssize_t zip_entry_index(struct zip_t *zip) {
 }
 
 int zip_entry_isdir(struct zip_t *zip) {
+  mz_uint16 entrylen;
   if (!zip) {
     // zip_t handler is not initialized
     return ZIP_ENOINIT;
@@ -1341,8 +1472,8 @@ int zip_entry_isdir(struct zip_t *zip) {
     return ZIP_EINVIDX;
   }
 
-  return (int)mz_zip_reader_is_file_a_directory(&zip->archive,
-                                                (mz_uint)zip->entry.index);
+  entrylen = (mz_uint16)strlen(zip->entry.name);
+  return ISSLASH(zip->entry.name[entrylen - 1]);
 }
 
 unsigned long long zip_entry_size(struct zip_t *zip) {
@@ -1359,6 +1490,14 @@ unsigned long long zip_entry_comp_size(struct zip_t *zip) {
 
 unsigned int zip_entry_crc32(struct zip_t *zip) {
   return zip ? zip->entry.uncomp_crc32 : 0;
+}
+
+unsigned long long zip_entry_dir_offset(struct zip_t *zip) {
+  return zip ? zip->entry.dir_offset : 0;
+}
+
+unsigned long long zip_entry_header_offset(struct zip_t *zip) {
+  return zip ? zip->entry.header_offset : 0;
 }
 
 int zip_entry_write(struct zip_t *zip, const void *buf, size_t bufsize) {
@@ -1379,12 +1518,12 @@ int zip_entry_write(struct zip_t *zip, const void *buf, size_t bufsize) {
 
     level = zip->level & 0xF;
     if (!level) {
-      if ((pzip->m_pWrite(pzip->m_pIO_opaque, zip->entry.offset, buf,
+      if ((pzip->m_pWrite(pzip->m_pIO_opaque, zip->entry.dir_offset, buf,
                           bufsize) != bufsize)) {
         // Cannot write buffer
         return ZIP_EWRTENT;
       }
-      zip->entry.offset += bufsize;
+      zip->entry.dir_offset += bufsize;
       zip->entry.comp_size += bufsize;
     } else {
       status = tdefl_compress_buffer(&(zip->entry.comp), buf, bufsize,
@@ -1517,6 +1656,75 @@ ssize_t zip_entry_noallocread(struct zip_t *zip, void *buf, size_t bufsize) {
   return (ssize_t)zip->entry.uncomp_size;
 }
 
+ssize_t zip_entry_noallocreadwithoffset(struct zip_t *zip, size_t offset,
+                                        size_t size, void *buf) {
+  mz_zip_archive *pzip = NULL;
+
+  if (!zip) {
+    // zip_t handler is not initialized
+    return (ssize_t)ZIP_ENOINIT;
+  }
+
+  if (offset >= (size_t)zip->entry.uncomp_size) {
+    return (ssize_t)ZIP_EINVAL;
+  }
+
+  if ((offset + size) > (size_t)zip->entry.uncomp_size) {
+    size = (ssize_t)zip->entry.uncomp_size - offset;
+  }
+
+  pzip = &(zip->archive);
+  if (pzip->m_zip_mode != MZ_ZIP_MODE_READING ||
+      zip->entry.index < (ssize_t)0) {
+    // the entry is not found or we do not have read access
+    return (ssize_t)ZIP_ENOENT;
+  }
+
+  mz_zip_reader_extract_iter_state *iter =
+      mz_zip_reader_extract_iter_new(pzip, (mz_uint)zip->entry.index, 0);
+  if (!iter) {
+    return (ssize_t)ZIP_ENORITER;
+  }
+
+  mz_uint8 *writebuf = (mz_uint8 *)buf;
+  size_t file_offset = 0;
+  size_t write_cursor = 0;
+  size_t to_read = size;
+
+  // iterate until the requested offset is in range
+  while (file_offset < zip->entry.uncomp_size && to_read > 0) {
+    size_t nread = mz_zip_reader_extract_iter_read(
+        iter, (void *)&writebuf[write_cursor], to_read);
+
+    if (nread == 0)
+      break;
+
+    if (offset < (file_offset + nread)) {
+      size_t read_cursor = offset - file_offset;
+      MZ_ASSERT(read_cursor < size);
+      size_t read_size = nread - read_cursor;
+
+      if (to_read < read_size)
+        read_size = to_read;
+      MZ_ASSERT(read_size <= size);
+
+      // If it's an unaligned read (i.e. the first one)
+      if (read_cursor != 0) {
+        memmove(&writebuf[write_cursor], &writebuf[read_cursor], read_size);
+      }
+
+      write_cursor += read_size;
+      offset += read_size;
+      to_read -= read_size;
+    }
+
+    file_offset += nread;
+  }
+
+  mz_zip_reader_extract_iter_free(iter);
+  return (ssize_t)write_cursor;
+}
+
 int zip_entry_fread(struct zip_t *zip, const char *filename) {
   mz_zip_archive *pzip = NULL;
   mz_uint idx;
@@ -1614,6 +1822,9 @@ ssize_t zip_entries_delete(struct zip_t *zip, char *const entries[],
   }
 
   n = zip_entries_total(zip);
+  if (n < 0) {
+    return n;
+  }
 
   entry_mark = (struct zip_entry_mark_t *)calloc(
       (size_t)n, sizeof(struct zip_entry_mark_t));
@@ -1623,7 +1834,45 @@ ssize_t zip_entries_delete(struct zip_t *zip, char *const entries[],
 
   zip->archive.m_zip_mode = MZ_ZIP_MODE_READING;
 
-  err = zip_entry_set(zip, entry_mark, n, entries, len);
+  err = zip_entry_set(zip, entry_mark, (size_t)n, entries, len);
+  if (err < 0) {
+    CLEANUP(entry_mark);
+    return err;
+  }
+
+  err = zip_entries_delete_mark(zip, entry_mark, (int)n);
+  CLEANUP(entry_mark);
+  return err;
+}
+
+ssize_t zip_entries_deletebyindex(struct zip_t *zip, size_t entries[],
+                                  size_t len) {
+  ssize_t n = 0;
+  ssize_t err = 0;
+  struct zip_entry_mark_t *entry_mark = NULL;
+
+  if (zip == NULL || (entries == NULL && len != 0)) {
+    return ZIP_ENOINIT;
+  }
+
+  if (entries == NULL && len == 0) {
+    return 0;
+  }
+
+  n = zip_entries_total(zip);
+  if (n < 0) {
+    return n;
+  }
+
+  entry_mark = (struct zip_entry_mark_t *)calloc(
+      (size_t)n, sizeof(struct zip_entry_mark_t));
+  if (!entry_mark) {
+    return ZIP_EOOMEM;
+  }
+
+  zip->archive.m_zip_mode = MZ_ZIP_MODE_READING;
+
+  err = zip_entry_setbyindex(zip, entry_mark, (size_t)n, entries, len);
   if (err < 0) {
     CLEANUP(entry_mark);
     return err;
@@ -1717,7 +1966,7 @@ ssize_t zip_stream_copy(struct zip_t *zip, void **buf, size_t *bufsize) {
     *bufsize = n;
   }
 
-  *buf = calloc(sizeof(unsigned char), n);
+  *buf = calloc(n, sizeof(unsigned char));
   memcpy(*buf, zip->archive.m_pState->m_pMem, n);
 
   return (ssize_t)n;
@@ -1730,6 +1979,92 @@ void zip_stream_close(struct zip_t *zip) {
     CLEANUP(zip);
   }
 }
+
+struct zip_t *zip_cstream_open(FILE *stream, int level, char mode) {
+  int errnum = 0;
+  return zip_cstream_openwitherror(stream, level, mode, &errnum);
+}
+
+struct zip_t *zip_cstream_openwitherror(FILE *stream, int level, char mode,
+                                        int *errnum) {
+  struct zip_t *zip = NULL;
+  *errnum = 0;
+  if (!stream) {
+    // zip archive stream is NULL
+    *errnum = ZIP_ENOFILE;
+    goto cleanup;
+  }
+
+  if (level < 0)
+    level = MZ_DEFAULT_LEVEL;
+  if ((level & 0xF) > MZ_UBER_COMPRESSION) {
+    // Wrong compression level
+    *errnum = ZIP_EINVLVL;
+    goto cleanup;
+  }
+
+  zip = (struct zip_t *)calloc((size_t)1, sizeof(struct zip_t));
+  if (!zip) {
+    // out of memory
+    *errnum = ZIP_EOOMEM;
+    goto cleanup;
+  }
+
+  zip->level = (mz_uint)level;
+  switch (mode) {
+  case 'w':
+    // Create a new archive.
+    if (!mz_zip_writer_init_cfile(&(zip->archive), stream,
+                                  MZ_ZIP_FLAG_WRITE_ZIP64)) {
+      // Cannot initialize zip_archive writer
+      *errnum = ZIP_EWINIT;
+      goto cleanup;
+    }
+    break;
+
+  case 'r':
+    if (!mz_zip_reader_init_cfile(
+            &(zip->archive), stream, 0,
+            zip->level | MZ_ZIP_FLAG_DO_NOT_SORT_CENTRAL_DIRECTORY)) {
+      // An archive file does not exist or cannot initialize
+      // zip_archive reader
+      *errnum = ZIP_ERINIT;
+      goto cleanup;
+    }
+    break;
+
+  case 'a':
+  case 'd':
+    if (!mz_zip_reader_init_cfile(
+            &(zip->archive), stream, 0,
+            zip->level | MZ_ZIP_FLAG_DO_NOT_SORT_CENTRAL_DIRECTORY)) {
+      // An archive file does not exist or cannot initialize
+      // zip_archive reader
+      *errnum = ZIP_ERINIT;
+      goto cleanup;
+    }
+    if ((mode == 'a' || mode == 'd')) {
+      if (!mz_zip_writer_init_from_reader_v2(&(zip->archive), NULL, 0)) {
+        *errnum = ZIP_EWRINIT;
+        mz_zip_reader_end(&(zip->archive));
+        goto cleanup;
+      }
+    }
+    break;
+
+  default:
+    *errnum = ZIP_EINVMODE;
+    goto cleanup;
+  }
+
+  return zip;
+
+cleanup:
+  CLEANUP(zip);
+  return NULL;
+}
+
+void zip_cstream_close(struct zip_t *zip) { zip_close(zip); }
 
 int zip_create(const char *zipname, const char *filenames[], size_t len) {
   int err = 0;
@@ -1834,235 +2169,4 @@ int zip_extract(const char *zipname, const char *dir,
   }
 
   return zip_archive_extract(&zip_archive, dir, on_extract, arg);
-}
-
-#if defined(__SSE4_2__) || defined(__AVX512F__)
-#include <immintrin.h>
-#endif
-
-// Phil Katz 32-Bit Cyclic Redundancy Check Uber Alles
-// Goes 73 GiB/s on an AMD Ryzen Threadripper PRO 7995WX
-// "Fast CRC Computation for Generic Polynomials Using PCLMULQDQ Instruction"
-//  V. Gopal, E. Ozturk, et al., 2009, http://intel.ly/2ySEwL0
-mz_ulong mz_crc32(mz_ulong init, const uint8_t *buf, size_t len) {
-  uint32_t crc = ~init;
-#if defined(__AVX512F__) && defined(__VPCLMULQDQ__) && defined(__PCLMUL__)
-  if (len >= 256) {
-    _Alignas(__m512) static const uint64_t k1k2[] = {
-        0x011542778a, 0x01322d1430, 0x011542778a, 0x01322d1430,
-        0x011542778a, 0x01322d1430, 0x011542778a, 0x01322d1430,
-    };
-    _Alignas(__m512) static const uint64_t k3k4[] = {
-        0x0154442bd4, 0x01c6e41596, 0x0154442bd4, 0x01c6e41596,
-        0x0154442bd4, 0x01c6e41596, 0x0154442bd4, 0x01c6e41596,
-    };
-    _Alignas(__m512) static const uint64_t k5k6[] = {
-        0x01751997d0,
-        0x00ccaa009e,
-    };
-    _Alignas(__m512) static const uint64_t k7k8[] = {
-        0x0163cd6124,
-        0x0000000000,
-    };
-    _Alignas(__m512) static const uint64_t poly[] = {
-        0x01db710641,
-        0x01f7011641,
-    };
-    __m512i x0, x1, x2, x3, x4, x5, x6, x7, x8, y5, y6, y7, y8;
-    __m128i a0, a1, a2, a3;
-    x1 = _mm512_loadu_si512((__m512i *)(buf + 0x00));
-    x2 = _mm512_loadu_si512((__m512i *)(buf + 0x40));
-    x3 = _mm512_loadu_si512((__m512i *)(buf + 0x80));
-    x4 = _mm512_loadu_si512((__m512i *)(buf + 0xC0));
-    x1 = _mm512_xor_si512(x1, _mm512_castsi128_si512(_mm_cvtsi32_si128(crc)));
-    x0 = _mm512_load_si512((__m512i *)k1k2);
-    buf += 256;
-    len -= 256;
-    while (len >= 256) {
-      x5 = _mm512_clmulepi64_epi128(x1, x0, 0x00);
-      x6 = _mm512_clmulepi64_epi128(x2, x0, 0x00);
-      x7 = _mm512_clmulepi64_epi128(x3, x0, 0x00);
-      x8 = _mm512_clmulepi64_epi128(x4, x0, 0x00);
-      x1 = _mm512_clmulepi64_epi128(x1, x0, 0x11);
-      x2 = _mm512_clmulepi64_epi128(x2, x0, 0x11);
-      x3 = _mm512_clmulepi64_epi128(x3, x0, 0x11);
-      x4 = _mm512_clmulepi64_epi128(x4, x0, 0x11);
-      y5 = _mm512_loadu_si512((__m512i *)(buf + 0x00));
-      y6 = _mm512_loadu_si512((__m512i *)(buf + 0x40));
-      y7 = _mm512_loadu_si512((__m512i *)(buf + 0x80));
-      y8 = _mm512_loadu_si512((__m512i *)(buf + 0xC0));
-      x1 = _mm512_xor_si512(x1, x5);
-      x2 = _mm512_xor_si512(x2, x6);
-      x3 = _mm512_xor_si512(x3, x7);
-      x4 = _mm512_xor_si512(x4, x8);
-      x1 = _mm512_xor_si512(x1, y5);
-      x2 = _mm512_xor_si512(x2, y6);
-      x3 = _mm512_xor_si512(x3, y7);
-      x4 = _mm512_xor_si512(x4, y8);
-      buf += 256;
-      len -= 256;
-    }
-    x0 = _mm512_load_si512((__m512i *)k3k4);
-    x5 = _mm512_clmulepi64_epi128(x1, x0, 0x00);
-    x1 = _mm512_clmulepi64_epi128(x1, x0, 0x11);
-    x1 = _mm512_xor_si512(x1, x2);
-    x1 = _mm512_xor_si512(x1, x5);
-    x5 = _mm512_clmulepi64_epi128(x1, x0, 0x00);
-    x1 = _mm512_clmulepi64_epi128(x1, x0, 0x11);
-    x1 = _mm512_xor_si512(x1, x3);
-    x1 = _mm512_xor_si512(x1, x5);
-    x5 = _mm512_clmulepi64_epi128(x1, x0, 0x00);
-    x1 = _mm512_clmulepi64_epi128(x1, x0, 0x11);
-    x1 = _mm512_xor_si512(x1, x4);
-    x1 = _mm512_xor_si512(x1, x5);
-    while (len >= 64) {
-      x2 = _mm512_loadu_si512((__m512i *)buf);
-      x5 = _mm512_clmulepi64_epi128(x1, x0, 0x00);
-      x1 = _mm512_clmulepi64_epi128(x1, x0, 0x11);
-      x1 = _mm512_xor_si512(x1, x2);
-      x1 = _mm512_xor_si512(x1, x5);
-      buf += 64;
-      len -= 64;
-    }
-    a0 = _mm_load_si128((__m128i *)k5k6);
-    a1 = _mm512_extracti32x4_epi32(x1, 0);
-    a2 = _mm512_extracti32x4_epi32(x1, 1);
-    a3 = _mm_clmulepi64_si128(a1, a0, 0x00);
-    a1 = _mm_clmulepi64_si128(a1, a0, 0x11);
-    a1 = _mm_xor_si128(a1, a3);
-    a1 = _mm_xor_si128(a1, a2);
-    a2 = _mm512_extracti32x4_epi32(x1, 2);
-    a3 = _mm_clmulepi64_si128(a1, a0, 0x00);
-    a1 = _mm_clmulepi64_si128(a1, a0, 0x11);
-    a1 = _mm_xor_si128(a1, a3);
-    a1 = _mm_xor_si128(a1, a2);
-    a2 = _mm512_extracti32x4_epi32(x1, 3);
-    a3 = _mm_clmulepi64_si128(a1, a0, 0x00);
-    a1 = _mm_clmulepi64_si128(a1, a0, 0x11);
-    a1 = _mm_xor_si128(a1, a3);
-    a1 = _mm_xor_si128(a1, a2);
-    a2 = _mm_clmulepi64_si128(a1, a0, 0x10);
-    a3 = _mm_setr_epi32(~0, 0, ~0, 0);
-    a1 = _mm_srli_si128(a1, 8);
-    a1 = _mm_xor_si128(a1, a2);
-    a0 = _mm_loadl_epi64((__m128i *)k7k8);
-    a2 = _mm_srli_si128(a1, 4);
-    a1 = _mm_and_si128(a1, a3);
-    a1 = _mm_clmulepi64_si128(a1, a0, 0x00);
-    a1 = _mm_xor_si128(a1, a2);
-    a0 = _mm_load_si128((__m128i *)poly);
-    a2 = _mm_and_si128(a1, a3);
-    a2 = _mm_clmulepi64_si128(a2, a0, 0x10);
-    a2 = _mm_and_si128(a2, a3);
-    a2 = _mm_clmulepi64_si128(a2, a0, 0x00);
-    a1 = _mm_xor_si128(a1, a2);
-    crc = _mm_extract_epi32(a1, 1);
-  }
-#endif
-#if defined(__SSE4_2__) && defined(__PCLMUL__)
-  if (len >= 64) {
-    _Alignas(__m128) static const uint64_t k1k2[] = {
-        0x0154442bd4,
-        0x01c6e41596,
-    };
-    _Alignas(__m128) static const uint64_t k3k4[] = {
-        0x01751997d0,
-        0x00ccaa009e,
-    };
-    _Alignas(__m128) static const uint64_t k5k0[] = {
-        0x0163cd6124,
-        0x0000000000,
-    };
-    _Alignas(__m128) static const uint64_t poly[] = {
-        0x01db710641,
-        0x01f7011641,
-    };
-    __m128i x0, x1, x2, x3, x4, x5, x6, x7, x8, y5, y6, y7, y8;
-    x1 = _mm_loadu_si128((__m128i *)(buf + 0x00));
-    x2 = _mm_loadu_si128((__m128i *)(buf + 0x10));
-    x3 = _mm_loadu_si128((__m128i *)(buf + 0x20));
-    x4 = _mm_loadu_si128((__m128i *)(buf + 0x30));
-    x1 = _mm_xor_si128(x1, _mm_cvtsi32_si128(crc));
-    x0 = _mm_load_si128((__m128i *)k1k2);
-    buf += 64;
-    len -= 64;
-    while (len >= 64) {
-      x5 = _mm_clmulepi64_si128(x1, x0, 0x00);
-      x6 = _mm_clmulepi64_si128(x2, x0, 0x00);
-      x7 = _mm_clmulepi64_si128(x3, x0, 0x00);
-      x8 = _mm_clmulepi64_si128(x4, x0, 0x00);
-      x1 = _mm_clmulepi64_si128(x1, x0, 0x11);
-      x2 = _mm_clmulepi64_si128(x2, x0, 0x11);
-      x3 = _mm_clmulepi64_si128(x3, x0, 0x11);
-      x4 = _mm_clmulepi64_si128(x4, x0, 0x11);
-      y5 = _mm_loadu_si128((__m128i *)(buf + 0x00));
-      y6 = _mm_loadu_si128((__m128i *)(buf + 0x10));
-      y7 = _mm_loadu_si128((__m128i *)(buf + 0x20));
-      y8 = _mm_loadu_si128((__m128i *)(buf + 0x30));
-      x1 = _mm_xor_si128(x1, x5);
-      x2 = _mm_xor_si128(x2, x6);
-      x3 = _mm_xor_si128(x3, x7);
-      x4 = _mm_xor_si128(x4, x8);
-      x1 = _mm_xor_si128(x1, y5);
-      x2 = _mm_xor_si128(x2, y6);
-      x3 = _mm_xor_si128(x3, y7);
-      x4 = _mm_xor_si128(x4, y8);
-      buf += 64;
-      len -= 64;
-    }
-    x0 = _mm_load_si128((__m128i *)k3k4);
-    x5 = _mm_clmulepi64_si128(x1, x0, 0x00);
-    x1 = _mm_clmulepi64_si128(x1, x0, 0x11);
-    x1 = _mm_xor_si128(x1, x2);
-    x1 = _mm_xor_si128(x1, x5);
-    x5 = _mm_clmulepi64_si128(x1, x0, 0x00);
-    x1 = _mm_clmulepi64_si128(x1, x0, 0x11);
-    x1 = _mm_xor_si128(x1, x3);
-    x1 = _mm_xor_si128(x1, x5);
-    x5 = _mm_clmulepi64_si128(x1, x0, 0x00);
-    x1 = _mm_clmulepi64_si128(x1, x0, 0x11);
-    x1 = _mm_xor_si128(x1, x4);
-    x1 = _mm_xor_si128(x1, x5);
-    while (len >= 16) {
-      x2 = _mm_loadu_si128((__m128i *)buf);
-      x5 = _mm_clmulepi64_si128(x1, x0, 0x00);
-      x1 = _mm_clmulepi64_si128(x1, x0, 0x11);
-      x1 = _mm_xor_si128(x1, x2);
-      x1 = _mm_xor_si128(x1, x5);
-      buf += 16;
-      len -= 16;
-    }
-    x2 = _mm_clmulepi64_si128(x1, x0, 0x10);
-    x3 = _mm_setr_epi32(~0, 0, ~0, 0);
-    x1 = _mm_srli_si128(x1, 8);
-    x1 = _mm_xor_si128(x1, x2);
-    x0 = _mm_loadl_epi64((__m128i *)k5k0);
-    x2 = _mm_srli_si128(x1, 4);
-    x1 = _mm_and_si128(x1, x3);
-    x1 = _mm_clmulepi64_si128(x1, x0, 0x00);
-    x1 = _mm_xor_si128(x1, x2);
-    x0 = _mm_load_si128((__m128i *)poly);
-    x2 = _mm_and_si128(x1, x3);
-    x2 = _mm_clmulepi64_si128(x2, x0, 0x10);
-    x2 = _mm_and_si128(x2, x3);
-    x2 = _mm_clmulepi64_si128(x2, x0, 0x00);
-    x1 = _mm_xor_si128(x1, x2);
-    crc = _mm_extract_epi32(x1, 1);
-  }
-#endif
-  static uint32_t tab[256];
-  if (!tab[255]) {
-    // generates table for byte-wise crc calculation on the polynomial
-    // x^32+x^26+x^23+x^22+x^16+x^12+x^11+x^10+x^8+x^7+x^5+x^4+x^2+x+1
-    uint32_t polynomial = 0xedb88320;  // bits are reversed
-    for (int d = 0; d < 256; ++d) {
-      uint32_t r = d;
-      for (int i = 0; i < 8; ++i)
-        r = r >> 1 ^ (r & 1 ? polynomial : 0);
-      tab[d] = r;
-    }
-  }
-  for (size_t i = 0; i < len; ++i)
-    crc = crc >> 8 ^ tab[(crc & 255) ^ buf[i]];
-  return ~crc & 0xffffffff;
 }
