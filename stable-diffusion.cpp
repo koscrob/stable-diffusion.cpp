@@ -99,14 +99,24 @@ public:
     std::shared_ptr<LoraModel> pmid_lora;
     std::shared_ptr<PhotoMakerIDEmbed> pmid_id_embeds;
 
+    std::string model_path;
+    std::string clip_l_path;
+    std::string clip_g_path;
+    std::string t5xxl_path;
+    std::string diffusion_model_path;
+    std::string vae_path;
     std::string taesd_path;
+    std::string control_net_path;
+    std::string embeddings_path;
+    std::string id_embeddings_path;
+    std::string lora_model_dir;
+
     bool use_tiny_autoencoder = false;
     bool vae_tiling           = false;
     bool stacked_id           = false;
 
     std::map<std::string, struct ggml_tensor*> tensors;
 
-    std::string lora_model_dir;
     // lora_name => multiplier
     std::unordered_map<std::string, float> curr_lora_state;
 
@@ -117,11 +127,31 @@ public:
     StableDiffusionGGML(int n_threads,
                         bool vae_decode_only,
                         bool free_params_immediately,
+                        std::string model_path,
+                        std::string clip_l_path,
+                        std::string clip_g_path,
+                        std::string t5xxl_path,
+                        std::string diffusion_model_path,
+                        std::string vae_path,
+                        std::string taesd_path,
+                        std::string control_net_path,
+                        std::string embd_path,
+                        std::string id_embeddings_path,
                         std::string lora_model_dir,
                         rng_type_t rng_type)
         : n_threads(n_threads),
           vae_decode_only(vae_decode_only),
           free_params_immediately(free_params_immediately),
+          model_path(model_path),
+          clip_l_path(clip_l_path),
+          clip_g_path(clip_g_path),
+          t5xxl_path(t5xxl_path),
+          diffusion_model_path(diffusion_model_path),
+          vae_path(vae_path),
+          taesd_path(taesd_path),
+          control_net_path(control_net_path),
+          embeddings_path(embeddings_path),
+          id_embeddings_path(id_embeddings_path),
           lora_model_dir(lora_model_dir) {
         if (rng_type == STD_DEFAULT_RNG) {
             rng = std::make_shared<STDDefaultRNG>();
@@ -143,17 +173,7 @@ public:
         ggml_backend_free(backend);
     }
 
-    bool load_from_file(const std::string& model_path,
-                        const std::string& clip_l_path,
-                        const std::string& clip_g_path,
-                        const std::string& t5xxl_path,
-                        const std::string& diffusion_model_path,
-                        const std::string& vae_path,
-                        const std::string control_net_path,
-                        const std::string embeddings_path,
-                        const std::string id_embeddings_path,
-                        const std::string& taesd_path,
-                        bool vae_tiling_,
+    bool load_from_file(bool vae_tiling_,
                         ggml_type wtype,
                         schedule_t schedule,
                         bool clip_on_cpu,
@@ -1146,26 +1166,28 @@ sd_ctx_t* new_sd_ctx(const char* model_path_c_str,
     std::string id_embd_path(id_embed_dir_c_str);
     std::string lora_model_dir(lora_model_dir_c_str);
 
-    sd_ctx->sd = new StableDiffusionGGML(n_threads,
-                                         vae_decode_only,
-                                         free_params_immediately,
-                                         lora_model_dir,
-                                         rng_type);
+    sd_ctx->sd = new StableDiffusionGGML(
+        n_threads,
+        vae_decode_only,
+        free_params_immediately,
+        model_path,
+        clip_l_path,
+        clip_g_path,
+        t5xxl_path,
+        diffusion_model_path,
+        vae_path,
+        taesd_path,
+        control_net_path,
+        embd_path,
+        id_embd_path,
+        lora_model_dir,
+        rng_type
+    );
     if (sd_ctx->sd == NULL) {
         return NULL;
     }
 
-    if (!sd_ctx->sd->load_from_file(model_path,
-                                    clip_l_path,
-                                    clip_g_path,
-                                    t5xxl_path_c_str,
-                                    diffusion_model_path,
-                                    vae_path,
-                                    control_net_path,
-                                    embd_path,
-                                    id_embd_path,
-                                    taesd_path,
-                                    vae_tiling,
+    if (!sd_ctx->sd->load_from_file(vae_tiling,
                                     (ggml_type)wtype,
                                     s,
                                     keep_clip_on_cpu,
@@ -1483,6 +1505,8 @@ sd_image_t* generate_image(sd_ctx_t* sd_ctx,
     }
     int64_t t3 = ggml_time_ms();
     LOG_INFO("generating %" PRId64 " latent images completed, taking %.2fs", final_latents.size(), (t3 - t1) * 1.0f / 1000);
+
+    // TODO: Load VAE decoder-only here.
 
     // Decode to image
     LOG_INFO("decoding %zu latents", final_latents.size());
