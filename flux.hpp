@@ -138,7 +138,7 @@ namespace Flux {
                       int64_t num_heads = 8,
                       bool qkv_bias     = false,
                       bool flash_attn   = false)
-            : num_heads(num_heads) {
+            : num_heads(num_heads), flash_attn(flash_attn) {
             int64_t head_dim = dim / num_heads;
             blocks["qkv"]    = std::shared_ptr<GGMLBlock>(new Linear(dim, dim * 3, qkv_bias));
             blocks["norm"]   = std::shared_ptr<GGMLBlock>(new QKNorm(head_dim));

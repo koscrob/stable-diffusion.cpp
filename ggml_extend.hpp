@@ -61,9 +61,9 @@ __STATIC_INLINE__ struct ggml_tensor* ggml_mul_n_mode(struct ggml_context* ctx, 
     // reshape A
     // swap 0th and nth axis
     a       = ggml_cont(ctx, ggml_permute(ctx, a, mode, mode != 1 ? 1 : 0, mode != 2 ? 2 : 0, mode != 3 ? 3 : 0));
-    int ne1 = a->ne[1];
-    int ne2 = a->ne[2];
-    int ne3 = a->ne[3];
+    int64_t ne1 = a->ne[1];
+    int64_t ne2 = a->ne[2];
+    int64_t ne3 = a->ne[3];
     // make 2D
     a = ggml_cont(ctx, ggml_reshape_2d(ctx, a, a->ne[0], (ne3 * ne2 * ne1)));
 
@@ -110,10 +110,10 @@ __STATIC_INLINE__ struct ggml_tensor* ggml_kronecker(ggml_context* ctx, struct g
     return ggml_mul(ctx,
                     ggml_upscale_ext(ctx,
                                      a,
-                                     a->ne[0] * b->ne[0],
-                                     a->ne[1] * b->ne[1],
-                                     a->ne[2] * b->ne[2],
-                                     a->ne[3] * b->ne[3],
+                                     (int)a->ne[0] * (int)b->ne[0],
+                                     (int)a->ne[1] * (int)b->ne[1],
+                                     (int)a->ne[2] * (int)b->ne[2],
+                                     (int)a->ne[3] * (int)b->ne[3],
                                      GGML_SCALE_MODE_NEAREST),
                     b);
 }
@@ -154,7 +154,7 @@ __STATIC_INLINE__ float ggml_tensor_get_f32(const ggml_tensor* tensor, int l, in
 
 __STATIC_INLINE__ int ggml_tensor_get_i32(const ggml_tensor* tensor, int l, int k = 0, int j = 0, int i = 0) {
     if (tensor->buffer != NULL) {
-        float value;
+        int value;
         ggml_backend_tensor_get(tensor, &value, i * tensor->nb[3] + j * tensor->nb[2] + k * tensor->nb[1] + l * tensor->nb[0], sizeof(int));
         return value;
     }
@@ -308,6 +308,9 @@ __STATIC_INLINE__ uint8_t* sd_tensor_to_image(struct ggml_tensor* input) {
     int64_t channels = input->ne[2];
     GGML_ASSERT(channels == 3 && input->type == GGML_TYPE_F32);
     uint8_t* image_data = (uint8_t*)malloc(width * height * channels);
+    if (image_data == NULL) {
+        return NULL;
+    }
     for (int iy = 0; iy < height; iy++) {
         for (int ix = 0; ix < width; ix++) {
             for (int k = 0; k < channels; k++) {
@@ -325,6 +328,9 @@ __STATIC_INLINE__ uint8_t* sd_tensor_to_mul_image(struct ggml_tensor* input, int
     int64_t channels = input->ne[2];
     GGML_ASSERT(channels == 3 && input->type == GGML_TYPE_F32);
     uint8_t* image_data = (uint8_t*)malloc(width * height * channels);
+    if (image_data == NULL) {
+        return NULL;
+    }
     for (int iy = 0; iy < height; iy++) {
         for (int ix = 0; ix < width; ix++) {
             for (int k = 0; k < channels; k++) {
@@ -387,7 +393,7 @@ __STATIC_INLINE__ void sd_apply_mask(struct ggml_tensor* image_data,
             m       = round(m);  // inpaint models need binary masks
             ggml_tensor_set_f32(mask, m, ix, iy);
             for (int k = 0; k < channels; k++) {
-                float value = (1 - m) * (ggml_tensor_get_f32(image_data, ix, iy, k) - .5) + .5;
+                float value = (1 - m) * (ggml_tensor_get_f32(image_data, ix, iy, k) - .5f) + .5f;
                 ggml_tensor_set_f32(output, value, ix, iy, k);
             }
         }
@@ -426,7 +432,7 @@ __STATIC_INLINE__ void sd_image_f32_to_tensor(const float* image_data,
     for (int iy = 0; iy < height; iy++) {
         for (int ix = 0; ix < width; ix++) {
             for (int k = 0; k < channels; k++) {
-                int value = *(image_data + iy * width * channels + ix * channels + k);
+                float value = *(image_data + iy * width * channels + ix * channels + k);
                 if (scale) {
                     value /= 255.f;
                 }
@@ -563,7 +569,7 @@ __STATIC_INLINE__ struct ggml_tensor* ggml_tensor_concat(struct ggml_context* ct
                     if (i0 < a->ne[0] && i1 < a->ne[1] && i2 < a->ne[2] && i3 < a->ne[3]) {
                         v = ggml_tensor_get_f32(a, i0, i1, i2, i3);
                     } else {
-                        v = ggml_tensor_get_f32(b, i0 - o[0], i1 - o[1], i2 - o[2], i3 - o[3]);
+                        v = ggml_tensor_get_f32(b, i0 - (int)o[0], i1 - (int)o[1], i2 - (int)o[2], i3 - (int)o[3]);
                     }
 
                     ggml_tensor_set_f32(result, v, i0, i1, i2, i3);
@@ -627,7 +633,7 @@ __STATIC_INLINE__ void sd_tiling(ggml_tensor* input, ggml_tensor* output, const 
     ggml_tensor* input_tile  = ggml_new_tensor_4d(tiles_ctx, GGML_TYPE_F32, tile_size, tile_size, input->ne[2], 1);
     ggml_tensor* output_tile = ggml_new_tensor_4d(tiles_ctx, GGML_TYPE_F32, tile_size * scale, tile_size * scale, output->ne[2], 1);
     on_processing(input_tile, NULL, true);
-    int num_tiles = ceil((float)input_width / non_tile_overlap) * ceil((float)input_height / non_tile_overlap);
+    int num_tiles = (int)(ceil((float)input_width / non_tile_overlap) * ceil((float)input_height / non_tile_overlap));
     LOG_INFO("processing %i tiles", num_tiles);
     pretty_progress(1, num_tiles, 0.0f);
     int tile_count = 1;
@@ -1456,9 +1462,9 @@ protected:
     int64_t in_channels;
     int64_t out_channels;
     int64_t kernel_size;
-    int64_t stride;
-    int64_t padding;
-    int64_t dilation;
+    int32_t stride;
+    int32_t padding;
+    int32_t dilation;
     bool bias;
 
     void init_params(struct ggml_context* ctx, std::map<std::string, enum ggml_type>& tensor_types, const std::string prefix = "") {
@@ -1474,9 +1480,9 @@ public:
     Conv3dnx1x1(int64_t in_channels,
                 int64_t out_channels,
                 int64_t kernel_size,
-                int64_t stride   = 1,
-                int64_t padding  = 0,
-                int64_t dilation = 1,
+                int32_t stride   = 1,
+                int32_t padding  = 0,
+                int32_t dilation = 1,
                 bool bias        = true)
         : in_channels(in_channels),
           out_channels(out_channels),
@@ -1542,8 +1548,8 @@ public:
 
 class GroupNorm : public GGMLBlock {
 protected:
-    int64_t num_groups;
-    int64_t num_channels;
+    int32_t num_groups;
+    int32_t num_channels;
     float eps;
     bool affine;
 
@@ -1557,8 +1563,8 @@ protected:
     }
 
 public:
-    GroupNorm(int64_t num_groups,
-              int64_t num_channels,
+    GroupNorm(int32_t num_groups,
+              int32_t num_channels,
               float eps   = 1e-05f,
               bool affine = true)
         : num_groups(num_groups),

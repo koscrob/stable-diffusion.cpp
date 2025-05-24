@@ -174,7 +174,7 @@ void print_params(SDParams params) {
     printf("    sample_steps:      %d\n", params.sample_steps);
     printf("    strength(img2img): %.2f\n", params.strength);
     printf("    rng:               %s\n", rng_type_to_str[params.rng_type]);
-    printf("    seed:              %ld\n", params.seed);
+    printf("    seed:              %ld\n", (long)params.seed);
     printf("    batch_count:       %d\n", params.batch_count);
     printf("    vae_tiling:        %s\n", params.vae_tiling ? "true" : "false");
     printf("    upscale_repeats:   %d\n", params.upscale_repeats);
@@ -608,6 +608,7 @@ void parse_args(int argc, const char** argv, SDParams& params) {
                 try {
                     layers.push_back(std::stoi(token));
                 } catch (const std::invalid_argument& e) {
+                    (void)e;
                     invalid_arg = true;
                     break;
                 }
