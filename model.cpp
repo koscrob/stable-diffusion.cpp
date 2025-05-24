@@ -1938,32 +1938,36 @@ bool ModelLoader::load_tensors(std::map<std::string, struct ggml_tensor*>& tenso
 }
 
 bool ModelLoader::tensor_should_be_converted(const TensorStorage& tensor_storage, ggml_type type) {
+    switch (type) {
+        case GGML_TYPE_F32:   return tensor_storage.type != GGML_TYPE_F32;
+        case GGML_TYPE_F16:   return tensor_storage.type != GGML_TYPE_F16;
+        case GGML_TYPE_BF16:  return tensor_storage.type != GGML_TYPE_BF16;
+        case GGML_TYPE_COUNT: return false;
+    }
     const std::string& name = tensor_storage.name;
-    if (type != GGML_TYPE_COUNT) {
-        if (ggml_is_quantized(type) && tensor_storage.ne[0] % ggml_blck_size(type) != 0) {
-            // Pass, do not convert
-        } else if (ends_with(name, ".bias")) {
-            // Pass, do not convert
-        } else if (ends_with(name, ".scale")) {
-            // Pass, do not convert
-        } else if (contains(name, "img_in.") ||
-                   contains(name, "txt_in.") ||
-                   contains(name, "time_in.") ||
-                   contains(name, "vector_in.") ||
-                   contains(name, "guidance_in.") ||
-                   contains(name, "final_layer.")) {
-            // Pass, do not convert. For FLUX
-        } else if (contains(name, "x_embedder.") ||
-                   contains(name, "t_embedder.") ||
-                   contains(name, "y_embedder.") ||
-                   contains(name, "pos_embed") ||
-                   contains(name, "context_embedder.")) {
-            // Pass, do not convert. For MMDiT
-        } else if (contains(name, "time_embed.") || contains(name, "label_emb.")) {
-            // Pass, do not convert. For Unet
-        } else {
-            return true;
-        }
+    if (ggml_is_quantized(type) && tensor_storage.ne[0] % ggml_blck_size(type) != 0) {
+        // Pass, do not convert
+    } else if (ends_with(name, ".bias")) {
+        // Pass, do not convert
+    } else if (ends_with(name, ".scale")) {
+        // Pass, do not convert
+    } else if (contains(name, "img_in.") ||
+                contains(name, "txt_in.") ||
+                contains(name, "time_in.") ||
+                contains(name, "vector_in.") ||
+                contains(name, "guidance_in.") ||
+                contains(name, "final_layer.")) {
+        // Pass, do not convert. For FLUX
+    } else if (contains(name, "x_embedder.") ||
+                contains(name, "t_embedder.") ||
+                contains(name, "y_embedder.") ||
+                contains(name, "pos_embed") ||
+                contains(name, "context_embedder.")) {
+        // Pass, do not convert. For MMDiT
+    } else if (contains(name, "time_embed.") || contains(name, "label_emb.")) {
+        // Pass, do not convert. For Unet
+    } else {
+        return true;
     }
     return false;
 }
