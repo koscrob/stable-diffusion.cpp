@@ -382,7 +382,13 @@ public:
                 first_stage_model->alloc_params_buffer();
                 first_stage_model->get_param_tensors(tensors, "first_stage_model");
             } else {
-                tae_first_stage = std::make_shared<TinyAutoEncoder>(backend, model_loader.tensor_storages_types, "decoder.layers", vae_decode_only, version);
+                if (vae_on_cpu && !ggml_backend_is_cpu(backend)) {
+                    LOG_INFO("TAESD Autoencoder: Using CPU backend");
+                    vae_backend = ggml_backend_cpu_init();
+                } else {
+                    vae_backend = backend;
+                }
+                tae_first_stage = std::make_shared<TinyAutoEncoder>(vae_backend, model_loader.tensor_storages_types, "decoder.layers", vae_decode_only, version);
             }
             // first_stage_model->get_param_tensors(tensors, "first_stage_model.");
 
