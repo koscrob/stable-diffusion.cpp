@@ -435,7 +435,6 @@ struct ControlNet : public GGMLRunner {
         alloc_params_buffer();
         std::map<std::string, ggml_tensor*> tensors;
         control_net.get_param_tensors(tensors);
-        std::set<std::string> ignore_tensors;
 
         ModelLoader model_loader;
         if (!model_loader.init_from_file(file_path)) {
@@ -443,7 +442,7 @@ struct ControlNet : public GGMLRunner {
             return false;
         }
 
-        bool success = model_loader.load_tensors(tensors, backend, ignore_tensors);
+        bool success = model_loader.load_tensors(tensors, backend);
 
         if (!success) {
             LOG_ERROR("load control net tensors from model loader failed");

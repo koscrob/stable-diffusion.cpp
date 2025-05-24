@@ -420,23 +420,22 @@ public:
 
         int64_t t0 = ggml_time_ms();
 
-        std::set<std::string> ignore_tensors;
         tensors["alphas_cumprod"] = alphas_cumprod_tensor;
         if (use_tiny_autoencoder) {
-            ignore_tensors.insert("first_stage_model.");
+            model_loader.ignore_tensors.insert("first_stage_model.");
         }
         if (stacked_id) {
-            ignore_tensors.insert("lora.");
+            model_loader.ignore_tensors.insert("lora.");
         }
 
         if (vae_decode_only) {
-            ignore_tensors.insert("first_stage_model.encoder");
-            ignore_tensors.insert("first_stage_model.quant");
+            model_loader.ignore_tensors.insert("first_stage_model.encoder");
+            model_loader.ignore_tensors.insert("first_stage_model.quant");
         }
         if (version == VERSION_SVD) {
-            ignore_tensors.insert("conditioner.embedders.3");
+            model_loader.ignore_tensors.insert("conditioner.embedders.3");
         }
-        bool success = model_loader.load_tensors(tensors, backend, ignore_tensors);
+        bool success = model_loader.load_tensors(tensors, backend);
         if (!success) {
             LOG_ERROR("load tensors from model loader failed");
             ggml_free(ctx);

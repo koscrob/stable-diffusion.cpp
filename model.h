@@ -208,6 +208,7 @@ protected:
 
 public:
     std::map<std::string, enum ggml_type> tensor_storages_types;
+    std::set<std::string> ignore_tensors;
 
     bool init_from_file(const std::string& file_path, const std::string& prefix = "");
     SDVersion get_sd_version();
@@ -218,8 +219,7 @@ public:
     void set_wtype_override(ggml_type wtype, std::string prefix = "");
     bool load_tensors(on_new_tensor_cb_t on_new_tensor_cb, ggml_backend_t backend);
     bool load_tensors(std::map<std::string, struct ggml_tensor*>& tensors,
-                      ggml_backend_t backend,
-                      std::set<std::string> ignore_tensors = {});
+                      ggml_backend_t backend);
 
     bool save_to_gguf_file(const std::string& file_path, ggml_type type);
     bool tensor_should_be_converted(const TensorStorage& tensor_storage, ggml_type type);

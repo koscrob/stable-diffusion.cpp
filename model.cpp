@@ -1778,10 +1778,22 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb, ggml_backend
             return true;
         };
         int tensor_count = 0;
+        int tensors_to_load_count = 0;
         int64_t t1       = ggml_time_ms();
         for (auto& tensor_storage : processed_tensor_storages) {
             if (tensor_storage.file_index != file_index) {
-                ++tensor_count;
+                continue;
+            }
+            tensors_to_load_count += 1;
+            for (auto& ignore_tensor : ignore_tensors) {
+                if (starts_with(tensor_storage.name, ignore_tensor)) {
+                    tensors_to_load_count -= 1;
+                    break;
+                }
+            }
+        }
+        for (auto& tensor_storage : processed_tensor_storages) {
+            if (tensor_storage.file_index != file_index) {
                 continue;
             }
             ggml_tensor* dst_tensor = NULL;
@@ -1793,7 +1805,6 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb, ggml_backend
             }
 
             if (dst_tensor == NULL) {
-                ++tensor_count;
                 continue;
             }
 
@@ -1861,7 +1872,7 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb, ggml_backend
                 }
             }
             int64_t t2 = ggml_time_ms();
-            pretty_progress(++tensor_count, processed_tensor_storages.size(), (t2 - t1) / 1000.0f);
+            pretty_progress(++tensor_count, tensors_to_load_count, (t2 - t1) / 1000.0f);
             t1 = t2;
         }
 
@@ -1877,8 +1888,7 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb, ggml_backend
 }
 
 bool ModelLoader::load_tensors(std::map<std::string, struct ggml_tensor*>& tensors,
-                               ggml_backend_t backend,
-                               std::set<std::string> ignore_tensors) {
+                               ggml_backend_t backend) {
     std::set<std::string> tensor_names_in_file;
     auto on_new_tensor_cb = [&](const TensorStorage& tensor_storage, ggml_tensor** dst_tensor) -> bool {
         const std::string& name = tensor_storage.name;
