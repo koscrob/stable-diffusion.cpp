@@ -624,11 +624,6 @@ void preprocess_tensor(TensorStorage tensor_storage,
     }
 }
 
-float bf16_to_f32(uint16_t bfloat16) {
-    uint32_t val_bits = (static_cast<uint32_t>(bfloat16) << 16);
-    return *reinterpret_cast<float*>(&val_bits);
-}
-
 uint16_t f8_e4m3_to_f16(uint8_t f8) {
     // do we need to support uz?
 
