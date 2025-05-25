@@ -138,8 +138,11 @@ __STATIC_INLINE__ void ggml_tensor_set_f32_randn(struct ggml_tensor* tensor, std
 // set tensor[k, l]
 // set tensor[j, k, l]
 __STATIC_INLINE__ void ggml_tensor_set_f32(struct ggml_tensor* tensor, float value, int l, int k = 0, int j = 0, int i = 0) {
-    GGML_ASSERT(tensor->nb[0] == sizeof(float));
-    *(float*)((char*)(tensor->data) + i * tensor->nb[3] + j * tensor->nb[2] + k * tensor->nb[1] + l * tensor->nb[0]) = value;
+    if (tensor->buffer != NULL) {
+        ggml_backend_tensor_set(tensor, &value, i * tensor->nb[3] + j * tensor->nb[2] + k * tensor->nb[1] + l * tensor->nb[0], sizeof(float));
+    } else {
+        ggml_set_f32_nd(tensor, l, k, j, i, value);
+    }
 }
 
 __STATIC_INLINE__ float ggml_tensor_get_f32(const ggml_tensor* tensor, int l, int k = 0, int j = 0, int i = 0) {
@@ -148,8 +151,7 @@ __STATIC_INLINE__ float ggml_tensor_get_f32(const ggml_tensor* tensor, int l, in
         ggml_backend_tensor_get(tensor, &value, i * tensor->nb[3] + j * tensor->nb[2] + k * tensor->nb[1] + l * tensor->nb[0], sizeof(float));
         return value;
     }
-    GGML_ASSERT(tensor->nb[0] == sizeof(float));
-    return *(float*)((char*)(tensor->data) + i * tensor->nb[3] + j * tensor->nb[2] + k * tensor->nb[1] + l * tensor->nb[0]);
+    return ggml_get_f32_nd(tensor, l, k, j, i);
 }
 
 __STATIC_INLINE__ int ggml_tensor_get_i32(const ggml_tensor* tensor, int l, int k = 0, int j = 0, int i = 0) {
@@ -158,13 +160,7 @@ __STATIC_INLINE__ int ggml_tensor_get_i32(const ggml_tensor* tensor, int l, int 
         ggml_backend_tensor_get(tensor, &value, i * tensor->nb[3] + j * tensor->nb[2] + k * tensor->nb[1] + l * tensor->nb[0], sizeof(int));
         return value;
     }
-    GGML_ASSERT(tensor->nb[0] == sizeof(int));
-    return *(int*)((char*)(tensor->data) + i * tensor->nb[3] + j * tensor->nb[2] + k * tensor->nb[1] + l * tensor->nb[0]);
-}
-
-__STATIC_INLINE__ ggml_fp16_t ggml_tensor_get_f16(const ggml_tensor* tensor, int l, int k = 0, int j = 0, int i = 0) {
-    GGML_ASSERT(tensor->nb[0] == sizeof(ggml_fp16_t));
-    return *(ggml_fp16_t*)((char*)(tensor->data) + i * tensor->nb[3] + j * tensor->nb[2] + k * tensor->nb[1] + l * tensor->nb[0]);
+    return ggml_get_i32_nd(tensor, l, k, j, i);
 }
 
 static struct ggml_tensor* get_tensor_from_graph(struct ggml_cgraph* gf, const char* name) {
@@ -203,13 +199,11 @@ __STATIC_INLINE__ void print_ggml_tensor(struct ggml_tensor* tensor, bool shape_
                     if (l >= range && l + range < tensor->ne[0]) {
                         continue;
                     }
-                    if (tensor->type == GGML_TYPE_F32) {
-                        printf("  [%d, %d, %d, %d] = %f\n", i, j, k, l, ggml_tensor_get_f32(tensor, l, k, j, i));
-                    } else if (tensor->type == GGML_TYPE_F16) {
-                        printf("  [%d, %d, %d, %d] = %i\n", i, j, k, l, ggml_tensor_get_f16(tensor, l, k, j, i));
-                    } else if (tensor->type == GGML_TYPE_I32) {
+                    if (tensor->type == GGML_TYPE_I32) {
                         printf("  [%d, %d, %d, %d] = %i\n", i, j, k, l, ggml_tensor_get_i32(tensor, l, k, j, i));
-                    }
+                    } else {
+                        printf("  [%d, %d, %d, %d] = %f\n", i, j, k, l, ggml_tensor_get_f32(tensor, l, k, j, i));
+                    } 
                     fflush(stdout);
                 }
             }
@@ -509,9 +503,8 @@ __STATIC_INLINE__ void ggml_merge_tensor_2d(struct ggml_tensor* input,
 __STATIC_INLINE__ float ggml_tensor_mean(struct ggml_tensor* src) {
     float mean        = 0.0f;
     int64_t nelements = ggml_nelements(src);
-    float* data       = (float*)src->data;
     for (int i = 0; i < nelements; i++) {
-        mean += data[i] / nelements * 1.0f;
+        mean += ggml_get_f32_1d(src, i) / nelements * 1.0f;
     }
     return mean;
 }
@@ -520,27 +513,24 @@ __STATIC_INLINE__ float ggml_tensor_mean(struct ggml_tensor* src) {
 __STATIC_INLINE__ void ggml_tensor_add(struct ggml_tensor* a, struct ggml_tensor* b) {
     GGML_ASSERT(ggml_nelements(a) == ggml_nelements(b));
     int64_t nelements = ggml_nelements(a);
-    float* vec_a      = (float*)a->data;
-    float* vec_b      = (float*)b->data;
     for (int i = 0; i < nelements; i++) {
-        vec_a[i] = vec_a[i] + vec_b[i];
+        ggml_set_f32_1d(a, i, ggml_get_f32_1d(a, i) + ggml_get_f32_1d(b, i));
     }
 }
 
 __STATIC_INLINE__ void ggml_tensor_scale(struct ggml_tensor* src, float scale) {
     int64_t nelements = ggml_nelements(src);
-    float* data       = (float*)src->data;
     for (int i = 0; i < nelements; i++) {
-        data[i] = data[i] * scale;
+        ggml_set_f32_1d(src, i, ggml_get_f32_1d(src, i) * scale);
     }
 }
 
 __STATIC_INLINE__ void ggml_tensor_clamp(struct ggml_tensor* src, float min, float max) {
     int64_t nelements = ggml_nelements(src);
-    float* data       = (float*)src->data;
     for (int i = 0; i < nelements; i++) {
-        float val = data[i];
-        data[i]   = val < min ? min : (val > max ? max : val);
+        float val = ggml_get_f32_1d(src, i);
+        val = val < min ? min : (val > max ? max : val);
+        ggml_set_f32_1d(src, i, val);
     }
 }
 
@@ -583,20 +573,16 @@ __STATIC_INLINE__ struct ggml_tensor* ggml_tensor_concat(struct ggml_context* ct
 // convert values from [0, 1] to [-1, 1]
 __STATIC_INLINE__ void ggml_tensor_scale_input(struct ggml_tensor* src) {
     int64_t nelements = ggml_nelements(src);
-    float* data       = (float*)src->data;
     for (int i = 0; i < nelements; i++) {
-        float val = data[i];
-        data[i]   = val * 2.0f - 1.0f;
+        ggml_set_f32_1d(src, i, ggml_get_f32_1d(src, i) * 2.0f - 1.0f);
     }
 }
 
 // convert values from [-1, 1] to [0, 1]
 __STATIC_INLINE__ void ggml_tensor_scale_output(struct ggml_tensor* src) {
     int64_t nelements = ggml_nelements(src);
-    float* data       = (float*)src->data;
     for (int i = 0; i < nelements; i++) {
-        float val = data[i];
-        data[i]   = (val + 1.0f) * 0.5f;
+        ggml_set_f32_1d(src, i, (ggml_get_f32_1d(src, i) + 1.0f) * 0.5f);
     }
 }
 
@@ -614,8 +600,8 @@ __STATIC_INLINE__ void sd_tiling(ggml_tensor* input, ggml_tensor* output, const 
     int non_tile_overlap = tile_size - tile_overlap;
 
     struct ggml_init_params params = {};
-    params.mem_size += tile_size * tile_size * input->ne[2] * sizeof(float);                       // input chunk
-    params.mem_size += (tile_size * scale) * (tile_size * scale) * output->ne[2] * sizeof(float);  // output chunk
+    params.mem_size += tile_size * tile_size * input->ne[2] * ggml_type_size(input->type);                       // input chunk
+    params.mem_size += (tile_size * scale) * (tile_size * scale) * output->ne[2] * ggml_type_size(output->type);  // output chunk
     params.mem_size += 3 * ggml_tensor_overhead();
     params.mem_buffer = NULL;
     params.no_alloc   = false;
@@ -630,8 +616,8 @@ __STATIC_INLINE__ void sd_tiling(ggml_tensor* input, ggml_tensor* output, const 
     }
 
     // tiling
-    ggml_tensor* input_tile  = ggml_new_tensor_4d(tiles_ctx, GGML_TYPE_F32, tile_size, tile_size, input->ne[2], 1);
-    ggml_tensor* output_tile = ggml_new_tensor_4d(tiles_ctx, GGML_TYPE_F32, tile_size * scale, tile_size * scale, output->ne[2], 1);
+    ggml_tensor* input_tile  = ggml_new_tensor_4d(tiles_ctx, input->type, tile_size, tile_size, input->ne[2], 1);
+    ggml_tensor* output_tile = ggml_new_tensor_4d(tiles_ctx, output->type, tile_size * scale, tile_size * scale, output->ne[2], 1);
     on_processing(input_tile, NULL, true);
     int num_tiles = (int)(ceil((float)input_width / non_tile_overlap) * ceil((float)input_height / non_tile_overlap));
     LOG_INFO("processing %i tiles", num_tiles);
@@ -951,14 +937,18 @@ __STATIC_INLINE__ void ggml_backend_tensor_get_and_sync(ggml_backend_t backend, 
 }
 
 __STATIC_INLINE__ float ggml_backend_tensor_get_f32(ggml_tensor* tensor) {
-    GGML_ASSERT(tensor->type == GGML_TYPE_F32 || tensor->type == GGML_TYPE_F16);
-    float value;
+    GGML_ASSERT(tensor->type == GGML_TYPE_F32 || tensor->type == GGML_TYPE_F16 || tensor->type == GGML_TYPE_BF16);
+    float value = 0;
     if (tensor->type == GGML_TYPE_F32) {
         ggml_backend_tensor_get(tensor, &value, 0, sizeof(value));
-    } else {  // GGML_TYPE_F16
+    } else if (tensor->type == GGML_TYPE_F16) {
         ggml_fp16_t f16_value;
         ggml_backend_tensor_get(tensor, &f16_value, 0, sizeof(f16_value));
         value = ggml_fp16_to_fp32(f16_value);
+    } else if (tensor->type == GGML_TYPE_BF16) {
+        ggml_bf16_t bf16_value;
+        ggml_backend_tensor_get(tensor, &bf16_value, 0, sizeof(bf16_value));
+        value = ggml_bf16_to_fp32(bf16_value);
     }
     return value;
 }
