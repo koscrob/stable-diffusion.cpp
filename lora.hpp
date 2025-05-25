@@ -126,7 +126,7 @@ struct LoraModel : public GGMLRunner {
             const std::string& name = tensor_storage.name;
 
             if (filter_tensor && !contains(name, "lora")) {
-                // LOG_INFO("skipping LoRA tesnor '%s'", name.c_str());
+                // LOG_INFO("skipping LoRA tensor '%s'", name.c_str());
                 return true;
             }
             // LOG_INFO("%s", name.c_str());
