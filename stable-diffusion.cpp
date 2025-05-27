@@ -135,7 +135,7 @@ public:
                         std::string vae_path,
                         std::string taesd_path,
                         std::string control_net_path,
-                        std::string embd_path,
+                        std::string embeddings_path,
                         std::string id_embeddings_path,
                         std::string lora_model_dir,
                         rng_type_t rng_type)
