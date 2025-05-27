@@ -951,7 +951,7 @@ ggml_type str_to_ggml_type(const std::string& dtype) {
     if (dtype == "F16") {
         ttype = GGML_TYPE_F16;
     } else if (dtype == "BF16") {
-        ttype = GGML_TYPE_F32;
+        ttype = GGML_TYPE_BF16;
     } else if (dtype == "F32") {
         ttype = GGML_TYPE_F32;
     } else if (dtype == "F8_E4M3") {
@@ -1064,6 +1064,7 @@ bool ModelLoader::init_from_safetensors_file(const std::string& file_path, const
 
         size_t tensor_data_size = end - begin;
 
+        // NOTE: If fp8 types are implemented natively, don't forget to update str_to_ggml_type().
         if (dtype == "F8_E4M3") {
             tensor_storage.is_f8_e4m3 = true;
             // f8 -> f16
