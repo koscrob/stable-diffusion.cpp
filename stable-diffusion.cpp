@@ -176,6 +176,9 @@ public:
     }
 
     bool load_clip_l() {
+        tensors.clear();
+        cond_stage_model->get_param_tensors(tensors);
+
         ModelLoader model_loader;
 
         bool loaded = false;
@@ -206,10 +209,14 @@ public:
             LOG_ERROR("load tensors from model loader failed");
             return false;
         }
+
         return true;
     }
 
     bool load_diffusion_model() {
+        tensors.clear();
+        diffusion_model->get_param_tensors(tensors);
+
         ModelLoader model_loader;
 
         bool loaded = false;
@@ -246,6 +253,9 @@ public:
         if (use_tiny_autoencoder) {
             return true;
         }
+
+        tensors.clear();
+        first_stage_model->get_param_tensors(tensors, "first_stage_model");
 
         ModelLoader model_loader;
 
@@ -482,10 +492,10 @@ public:
             }
 
             cond_stage_model->alloc_params_buffer();
-            cond_stage_model->get_param_tensors(tensors);
+            //cond_stage_model->get_param_tensors(tensors);
 
             diffusion_model->alloc_params_buffer();
-            diffusion_model->get_param_tensors(tensors);
+            //diffusion_model->get_param_tensors(tensors);
 
             if (!use_tiny_autoencoder) {
                 if (vae_on_cpu && !ggml_backend_is_cpu(backend)) {
@@ -496,7 +506,7 @@ public:
                 }
                 first_stage_model = std::make_shared<AutoEncoderKL>(vae_backend, model_loader.tensor_storages_types, "first_stage_model", vae_decode_only, false, version);
                 first_stage_model->alloc_params_buffer();
-                first_stage_model->get_param_tensors(tensors, "first_stage_model");
+                //first_stage_model->get_param_tensors(tensors, "first_stage_model");
             } else {
                 if (vae_on_cpu && !ggml_backend_is_cpu(backend)) {
                     LOG_INFO("TAESD Autoencoder: Using CPU backend");
@@ -562,7 +572,8 @@ public:
 
         int64_t t0 = ggml_time_ms();
 
-        tensors["alphas_cumprod"] = alphas_cumprod_tensor;
+        // NOTE: Why was this even set? alphas_cumprod_tensor is invalid outside of this function.
+        //tensors["alphas_cumprod"] = alphas_cumprod_tensor;
         if (use_tiny_autoencoder) {
             model_loader.ignore_tensors.insert("first_stage_model.");
         }
@@ -570,10 +581,10 @@ public:
             model_loader.ignore_tensors.insert("lora.");
         }
 
-        if (vae_decode_only) {
-            model_loader.ignore_tensors.insert("first_stage_model.encoder");
-            model_loader.ignore_tensors.insert("first_stage_model.quant");
-        }
+        //if (vae_decode_only) {
+        //    model_loader.ignore_tensors.insert("first_stage_model.encoder");
+        //    model_loader.ignore_tensors.insert("first_stage_model.quant");
+        //}
         if (version == VERSION_SVD) {
             model_loader.ignore_tensors.insert("conditioner.embedders.3");
         }
@@ -809,7 +820,7 @@ public:
         LOG_INFO("lora '%s' applied, taking %.2fs", lora_name.c_str(), (t1 - t0) * 1.0f / 1000);
     }
 
-    void apply_loras(const std::unordered_map<std::string, float>& lora_state) {
+    void apply_loras(const std::unordered_map<std::string, float>& lora_state, bool update_state = false) {
         if (lora_state.size() > 0 && model_wtype != GGML_TYPE_F16 && model_wtype != GGML_TYPE_F32) {
             LOG_WARN("In quantized models when applying LoRA, the images have poor quality.");
         }
@@ -836,7 +847,11 @@ public:
             apply_lora(kv.first, kv.second);
         }
 
-        curr_lora_state = lora_state;
+        // HACK: This is a hack so that LoRAs can be applied per individual model part.
+        // TODO: Add a clear_lora_stat() function.
+        if (update_state) {
+            curr_lora_state = lora_state;
+        }
     }
 
     ggml_tensor* id_encoder(ggml_context* work_ctx,
@@ -1385,10 +1400,9 @@ sd_image_t* generate_image(sd_ctx_t* sd_ctx,
     LOG_DEBUG("prompt after extract and remove lora: \"%s\"", prompt.c_str());
 
     int64_t t0 = ggml_time_ms();
-    // TODO: Readd LoRA support!
     //sd_ctx->sd->apply_loras(lora_f2m);
     int64_t t1 = ggml_time_ms();
-    LOG_INFO("apply_loras completed, taking %.2fs", (t1 - t0) * 1.0f / 1000);
+    //LOG_INFO("apply_loras completed, taking %.2fs", (t1 - t0) * 1.0f / 1000);
 
     // Photo Maker
     std::string prompt_text_only;
@@ -1499,6 +1513,7 @@ sd_image_t* generate_image(sd_ctx_t* sd_ctx,
     if (!sd_ctx->sd->load_clip_l()) {
         abort();
     }
+    sd_ctx->sd->apply_loras(lora_f2m);
     t0               = ggml_time_ms();
     SDCondition cond = sd_ctx->sd->cond_stage_model->get_learned_condition(work_ctx,
                                                                            sd_ctx->sd->n_threads,
@@ -1541,6 +1556,7 @@ sd_image_t* generate_image(sd_ctx_t* sd_ctx,
     if (!sd_ctx->sd->load_diffusion_model()) {
         abort();
     }
+    sd_ctx->sd->apply_loras(lora_f2m);
     std::vector<struct ggml_tensor*> final_latents;  // collect latents to decode
     int C = 4;
     if (sd_version_is_sd3(sd_ctx->sd->version)) {
@@ -1636,12 +1652,11 @@ sd_image_t* generate_image(sd_ctx_t* sd_ctx,
     int64_t t3 = ggml_time_ms();
     LOG_INFO("generating %" PRId64 " latent images completed, taking %.2fs", final_latents.size(), (t3 - t1) * 1.0f / 1000);
 
-    // TODO: Load VAE decoder-only here.
-
     // Decode to image
     if (!sd_ctx->sd->load_vae(StableDiffusionGGML::SD_VAE_DECODER)) {
         abort();
     }
+    //sd_ctx->sd->apply_loras(lora_f2m);
     LOG_INFO("decoding %zu latents", final_latents.size());
     std::vector<struct ggml_tensor*> decoded_images;  // collect decoded images
     for (size_t i = 0; i < final_latents.size(); i++) {
