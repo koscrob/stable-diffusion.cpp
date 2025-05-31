@@ -619,10 +619,9 @@ __STATIC_INLINE__ void sd_tiling(ggml_tensor* input, ggml_tensor* output, const 
     ggml_tensor* input_tile  = ggml_new_tensor_4d(tiles_ctx, input->type, tile_size, tile_size, input->ne[2], 1);
     ggml_tensor* output_tile = ggml_new_tensor_4d(tiles_ctx, output->type, tile_size * scale, tile_size * scale, output->ne[2], 1);
     on_processing(input_tile, NULL, true);
-    int num_tiles = (int)(ceil((float)input_width / non_tile_overlap) * ceil((float)input_height / non_tile_overlap));
+    int num_tiles = (int)((ceil((float)input_width / non_tile_overlap) - 1) * (ceil((float)input_height / non_tile_overlap) - 1));
     LOG_INFO("processing %i tiles", num_tiles);
-    pretty_progress(1, num_tiles, 0.0f);
-    int tile_count = 1;
+    int tile_count = 0;
     bool last_y = false, last_x = false;
     float last_time = 0.0f;
     for (int y = 0; y < input_height && !last_y; y += non_tile_overlap) {
@@ -641,8 +640,7 @@ __STATIC_INLINE__ void sd_tiling(ggml_tensor* input, ggml_tensor* output, const 
             ggml_merge_tensor_2d(output_tile, output, x * scale, y * scale, tile_overlap * scale);
             int64_t t2 = ggml_time_ms();
             last_time  = (t2 - t1) / 1000.0f;
-            pretty_progress(tile_count, num_tiles, last_time);
-            tile_count++;
+            pretty_progress(++tile_count, num_tiles, last_time);
         }
         last_x = false;
     }
