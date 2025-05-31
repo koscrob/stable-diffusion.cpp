@@ -814,9 +814,9 @@ struct LoraModel : public GGMLRunner {
         for (auto& kv : lora_tensors) {
             total_lora_tensors_count++;
             if (applied_lora_tensors.find(kv.first) == applied_lora_tensors.end()) {
-                LOG_WARN("unused lora tensor |%s|", kv.first.c_str());
-                print_ggml_tensor(kv.second, true);
-                // exit(0);
+                // TODO: Bring back reporting of unused lora tensors in some form.
+                //LOG_WARN("unused lora tensor |%s|", kv.first.c_str());
+                //print_ggml_tensor(kv.second, true);
             } else {
                 applied_lora_tensors_count++;
             }
