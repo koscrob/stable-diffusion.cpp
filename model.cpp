@@ -1059,7 +1059,9 @@ bool ModelLoader::init_from_safetensors_file(const std::string& file_path, const
             n_dims = 1;
         }
 
-        TensorStorage tensor_storage(prefix + name, type, ne, n_dims, file_index, ST_HEADER_SIZE_LEN + header_size_ + begin);
+        name = starts_with(name, prefix) ? name : prefix + name;
+
+        TensorStorage tensor_storage(name, type, ne, n_dims, file_index, ST_HEADER_SIZE_LEN + header_size_ + begin);
         tensor_storage.reverse_ne();
 
         size_t tensor_data_size = end - begin;
@@ -1872,15 +1874,16 @@ bool ModelLoader::load_tensors(std::map<std::string, struct ggml_tensor*>& tenso
         // LOG_DEBUG("%s", tensor_storage.to_string().c_str());
         tensor_names_in_file.insert(name);
 
+        for (auto& ignore_tensor : ignore_tensors) {
+            if (starts_with(name, ignore_tensor)) {
+                return true;
+            }
+        }
+
         struct ggml_tensor* real;
         if (tensors.find(name) != tensors.end()) {
             real = tensors[name];
         } else {
-            for (auto& ignore_tensor : ignore_tensors) {
-                if (starts_with(name, ignore_tensor)) {
-                    return true;
-                }
-            }
             LOG_INFO("unknown tensor '%s' in model file", tensor_storage.to_string().c_str());
             return true;
         }
@@ -1910,26 +1913,27 @@ bool ModelLoader::load_tensors(std::map<std::string, struct ggml_tensor*>& tenso
         return false;
     }
 
-    bool some_tensor_not_init = false;
-
-    for (auto pair : tensors) {
-        if (pair.first.find("cond_stage_model.transformer.text_model.encoder.layers.23") != std::string::npos) {
-            continue;
-        }
-
-        if (pair.first.find("alphas_cumprod") != std::string::npos) {
-            continue;
-        }
-
-        if (tensor_names_in_file.find(pair.first) == tensor_names_in_file.end()) {
-            LOG_ERROR("tensor '%s' not in model file", pair.first.c_str());
-            some_tensor_not_init = true;
-        }
-    }
-
-    if (some_tensor_not_init) {
-        return false;
-    }
+    // TODO: Readd in some form.
+    //bool some_tensor_not_init = false;
+    //
+    //for (auto pair : tensors) {
+    //    if (pair.first.find("cond_stage_model.transformer.text_model.encoder.layers.23") != std::string::npos) {
+    //        continue;
+    //    }
+    //
+    //    if (pair.first.find("alphas_cumprod") != std::string::npos) {
+    //        continue;
+    //    }
+    //
+    //    if (tensor_names_in_file.find(pair.first) == tensor_names_in_file.end()) {
+    //        LOG_ERROR("tensor '%s' not in model file", pair.first.c_str());
+    //        some_tensor_not_init = true;
+    //    }
+    //}
+    //
+    //if (some_tensor_not_init) {
+    //    return false;
+    //}
     return true;
 }
 

@@ -125,6 +125,7 @@ public:
     StableDiffusionGGML() = default;
 
     StableDiffusionGGML(int n_threads,
+                        bool vae_tiling,
                         bool vae_decode_only,
                         bool free_params_immediately,
                         std::string model_path,
@@ -140,6 +141,7 @@ public:
                         std::string lora_model_dir,
                         rng_type_t rng_type)
         : n_threads(n_threads),
+          vae_tiling(vae_tiling),
           vae_decode_only(vae_decode_only),
           free_params_immediately(free_params_immediately),
           model_path(model_path),
@@ -173,8 +175,119 @@ public:
         ggml_backend_free(backend);
     }
 
-    bool load_from_file(bool vae_tiling_,
-                        ggml_type wtype,
+    bool load_clip_l() {
+        ModelLoader model_loader;
+
+        bool loaded = false;
+
+        if (clip_l_path.size() > 0) {
+            LOG_INFO("loading clip_l from '%s'", clip_l_path.c_str());
+            std::string prefix = version == VERSION_SD1
+                ? "cond_stage_model.transformer." 
+                : "text_encoders.clip_l.transformer.";
+            loaded = model_loader.init_from_file(clip_l_path, prefix);
+            if (!loaded) {
+                LOG_WARN("loading clip_l from '%s' failed", clip_l_path.c_str());
+            }
+        }
+        if (!loaded && model_path.size() > 0) {
+            LOG_INFO("loading clip_l from '%s'", model_path.c_str());
+            if (!model_loader.init_from_file(model_path)) {
+                LOG_ERROR("loading clip_l from '%s' failed", model_path.c_str());
+                return false;
+            }
+        }
+
+        model_loader.ignore_tensors.insert("first_stage_model");
+        model_loader.ignore_tensors.insert("model.diffusion_model");
+
+        bool success = model_loader.load_tensors(tensors, clip_backend);
+        if (!success) {
+            LOG_ERROR("load tensors from model loader failed");
+            return false;
+        }
+        return true;
+    }
+
+    bool load_diffusion_model() {
+        ModelLoader model_loader;
+
+        bool loaded = false;
+
+        if (diffusion_model_path.size() > 0) {
+            LOG_INFO("loading diffusion model from '%s'", diffusion_model_path.c_str());
+            loaded = model_loader.init_from_file(diffusion_model_path, "model.diffusion_model.");
+            if (!loaded) {
+                LOG_WARN("loading diffusion model from '%s' failed", diffusion_model_path.c_str());
+            }
+        }
+        if (!loaded && model_path.size() > 0) {
+            LOG_INFO("loading diffusion model from '%s'", model_path.c_str());
+            if (!model_loader.init_from_file(model_path)) {
+                LOG_ERROR("loading diffusion model from '%s' failed", model_path.c_str());
+                return false;
+            }
+        }
+
+        model_loader.ignore_tensors.insert("cond_stage_model.transformer");
+        model_loader.ignore_tensors.insert("first_stage_model");
+
+        bool success = model_loader.load_tensors(tensors, backend);
+        if (!success) {
+            LOG_ERROR("load tensors from model loader failed");
+            return false;
+        }
+        return true;
+    }
+
+    enum VAE_mode { SD_VAE_DECODER, SD_VAE_ENCODER };
+
+    bool load_vae(VAE_mode mode = SD_VAE_DECODER) {
+        if (use_tiny_autoencoder) {
+            return true;
+        }
+
+        ModelLoader model_loader;
+
+        bool loaded = false;
+        if (vae_path.size() > 0) {
+            LOG_INFO("loading vae from '%s'", vae_path.c_str());
+            loaded = model_loader.init_from_file(vae_path, "vae.");
+            if (!loaded) {
+                LOG_WARN("loading vae from '%s' failed", vae_path.c_str());
+            }
+        }
+        if (!loaded && model_path.size() > 0) {
+            vae_load_from_model:
+            LOG_INFO("loading vae from '%s'", model_path.c_str());
+            if (!model_loader.init_from_file(model_path)) {
+                LOG_ERROR("loading vae from '%s' failed", model_path.c_str());
+                return false;
+            }
+        } else {
+            return false;
+        }
+
+        model_loader.ignore_tensors.insert("cond_stage_model.transformer");
+        model_loader.ignore_tensors.insert("model.diffusion_model");
+
+        if (mode == SD_VAE_DECODER) {
+            model_loader.ignore_tensors.insert("first_stage_model.encoder");
+            model_loader.ignore_tensors.insert("first_stage_model.quant");
+        } else {
+            model_loader.ignore_tensors.insert("first_stage_model.decoder");
+            model_loader.ignore_tensors.insert("first_stage_model.post_quant");
+        }
+
+        bool success = model_loader.load_tensors(tensors, vae_backend);
+        if (!success) {
+            LOG_ERROR("load tensors from model loader failed");
+            return false;
+        }
+        return true;
+    }
+
+    bool load_from_file(ggml_type wtype,
                         schedule_t schedule,
                         bool clip_on_cpu,
                         bool control_net_cpu,
@@ -211,8 +324,6 @@ public:
 
         ModelLoader model_loader;
 
-        vae_tiling = vae_tiling_;
-
         if (model_path.size() > 0) {
             LOG_INFO("loading model from '%s'", model_path.c_str());
             if (!model_loader.init_from_file(model_path)) {
@@ -220,9 +331,21 @@ public:
             }
         }
 
+        if (diffusion_model_path.size() > 0) {
+            LOG_INFO("loading diffusion model from '%s'", diffusion_model_path.c_str());
+            if (!model_loader.init_from_file(diffusion_model_path, "model.diffusion_model.")) {
+                LOG_WARN("loading diffusion model from '%s' failed", diffusion_model_path.c_str());
+            }
+        }
+
+        version = model_loader.get_sd_version();
+
         if (clip_l_path.size() > 0) {
             LOG_INFO("loading clip_l from '%s'", clip_l_path.c_str());
-            if (!model_loader.init_from_file(clip_l_path, "text_encoders.clip_l.transformer.")) {
+            std::string clip_l_prefix = version == VERSION_SD1
+                ? "cond_stage_model.transformer." 
+                : "text_encoders.clip_l.transformer.";
+            if (!model_loader.init_from_file(clip_l_path, clip_l_prefix)) {
                 LOG_WARN("loading clip_l from '%s' failed", clip_l_path.c_str());
             }
         }
@@ -238,13 +361,6 @@ public:
             LOG_INFO("loading t5xxl from '%s'", t5xxl_path.c_str());
             if (!model_loader.init_from_file(t5xxl_path, "text_encoders.t5xxl.transformer.")) {
                 LOG_WARN("loading t5xxl from '%s' failed", t5xxl_path.c_str());
-            }
-        }
-
-        if (diffusion_model_path.size() > 0) {
-            LOG_INFO("loading diffusion model from '%s'", diffusion_model_path.c_str());
-            if (!model_loader.init_from_file(diffusion_model_path, "model.diffusion_model.")) {
-                LOG_WARN("loading diffusion model from '%s' failed", diffusion_model_path.c_str());
             }
         }
 
@@ -461,12 +577,13 @@ public:
         if (version == VERSION_SVD) {
             model_loader.ignore_tensors.insert("conditioner.embedders.3");
         }
-        bool success = model_loader.load_tensors(tensors, backend);
-        if (!success) {
-            LOG_ERROR("load tensors from model loader failed");
-            ggml_free(ctx);
-            return false;
-        }
+        // HACK: Do not load tensors here.
+        //bool success = model_loader.load_tensors(tensors, backend);
+        //if (!success) {
+        //    LOG_ERROR("load tensors from model loader failed");
+        //    ggml_free(ctx);
+        //    return false;
+        //}
 
         // LOG_DEBUG("model size = %.2fMB", total_size / 1024.0 / 1024.0);
 
@@ -1174,6 +1291,7 @@ sd_ctx_t* new_sd_ctx(const char* model_path_c_str,
 
     sd_ctx->sd = new StableDiffusionGGML(
         n_threads,
+        vae_tiling,
         vae_decode_only,
         free_params_immediately,
         model_path,
@@ -1193,8 +1311,7 @@ sd_ctx_t* new_sd_ctx(const char* model_path_c_str,
         return NULL;
     }
 
-    if (!sd_ctx->sd->load_from_file(vae_tiling,
-                                    (ggml_type)wtype,
+    if (!sd_ctx->sd->load_from_file((ggml_type)wtype,
                                     s,
                                     keep_clip_on_cpu,
                                     keep_control_net_cpu,
@@ -1268,7 +1385,8 @@ sd_image_t* generate_image(sd_ctx_t* sd_ctx,
     LOG_DEBUG("prompt after extract and remove lora: \"%s\"", prompt.c_str());
 
     int64_t t0 = ggml_time_ms();
-    sd_ctx->sd->apply_loras(lora_f2m);
+    // TODO: Readd LoRA support!
+    //sd_ctx->sd->apply_loras(lora_f2m);
     int64_t t1 = ggml_time_ms();
     LOG_INFO("apply_loras completed, taking %.2fs", (t1 - t0) * 1.0f / 1000);
 
@@ -1378,6 +1496,9 @@ sd_image_t* generate_image(sd_ctx_t* sd_ctx,
     }
 
     // Get learned condition
+    if (!sd_ctx->sd->load_clip_l()) {
+        abort();
+    }
     t0               = ggml_time_ms();
     SDCondition cond = sd_ctx->sd->cond_stage_model->get_learned_condition(work_ctx,
                                                                            sd_ctx->sd->n_threads,
@@ -1417,6 +1538,9 @@ sd_image_t* generate_image(sd_ctx_t* sd_ctx,
     }
 
     // Sample
+    if (!sd_ctx->sd->load_diffusion_model()) {
+        abort();
+    }
     std::vector<struct ggml_tensor*> final_latents;  // collect latents to decode
     int C = 4;
     if (sd_version_is_sd3(sd_ctx->sd->version)) {
@@ -1515,6 +1639,9 @@ sd_image_t* generate_image(sd_ctx_t* sd_ctx,
     // TODO: Load VAE decoder-only here.
 
     // Decode to image
+    if (!sd_ctx->sd->load_vae(StableDiffusionGGML::SD_VAE_DECODER)) {
+        abort();
+    }
     LOG_INFO("decoding %zu latents", final_latents.size());
     std::vector<struct ggml_tensor*> decoded_images;  // collect decoded images
     for (size_t i = 0; i < final_latents.size(); i++) {
