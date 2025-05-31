@@ -929,8 +929,10 @@ bool ModelLoader::init_from_gguf_file(const std::string& file_path, const std::s
         size_t offset             = data_offset + gguf_get_tensor_offset(ctx_gguf_, i);
 
         // LOG_DEBUG("%s", name.c_str());
+        
+        name = starts_with(name, prefix) ? name : prefix + name;
 
-        TensorStorage tensor_storage(prefix + name, dummy->type, dummy->ne, ggml_n_dims(dummy), file_index, offset);
+        TensorStorage tensor_storage(name, dummy->type, dummy->ne, ggml_n_dims(dummy), file_index, offset);
 
         GGML_ASSERT(ggml_nbytes(dummy) == tensor_storage.nbytes());
 
@@ -1409,7 +1411,9 @@ bool ModelLoader::parse_data_pkl(uint8_t* buffer,
                         reader.tensor_storage.file_index = file_index;
                         // if(strcmp(prefix.c_str(), "scarlett") == 0)
                         // printf(" ZIP got tensor %s \n ", reader.tensor_storage.name.c_str());
-                        reader.tensor_storage.name = prefix + reader.tensor_storage.name;
+                        reader.tensor_storage.name = starts_with(reader.tensor_storage.name, prefix) 
+                            ? reader.tensor_storage.name 
+                            : prefix + reader.tensor_storage.name;
                         tensor_storages.push_back(reader.tensor_storage);
                         add_preprocess_tensor_storage_types(tensor_storages_types, reader.tensor_storage.name, reader.tensor_storage.type);
 
