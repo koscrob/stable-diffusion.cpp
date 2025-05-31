@@ -1202,7 +1202,7 @@ public:
             } else {
                 ggml_tensor_scale_input(x);
             }
-            if (vae_tiling && decode) {  // TODO: support tiling vae encode
+            if (vae_tiling && decode && x->ne[0] >= 32 && x->ne[1] >= 32) {  // TODO: support tiling vae encode
                 // split latent in 32x32 tiles and compute in several steps
                 auto on_tiling = [&](ggml_tensor* in, ggml_tensor* out, bool init) {
                     first_stage_model->compute(n_threads, in, decode, &out);
@@ -1216,7 +1216,7 @@ public:
                 ggml_tensor_scale_output(result);
             }
         } else {
-            if (vae_tiling && decode) {  // TODO: support tiling vae encode
+            if (vae_tiling && decode && x->ne[0] >= 64 && x->ne[1] >= 64) {  // TODO: support tiling vae encode
                 // split latent in 64x64 tiles and compute in several steps
                 auto on_tiling = [&](ggml_tensor* in, ggml_tensor* out, bool init) {
                     tae_first_stage->compute(n_threads, in, decode, &out);
