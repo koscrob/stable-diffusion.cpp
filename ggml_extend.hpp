@@ -490,10 +490,11 @@ __STATIC_INLINE__ void ggml_merge_tensor_2d(struct ggml_tensor* input,
 
                     float step = ggml_smootherstep_f32(y_f) * ggml_smootherstep_f32(x_f);
 
-                    ggml_tensor_set_f32(
-                        output,
-                        old_value * (1.f - step) + new_value * step,
-                        x + ix, y + iy, k);
+                    float scaled_old  = (old_value + 1.0f) * 0.5f;
+                    float scaled_new  = (new_value + 1.0f) * 0.5f;
+                    float final_value = (scaled_old * (1.0f - step) + scaled_new * step) * 2.0f - 1.0f;
+
+                    ggml_tensor_set_f32(output, final_value, x + ix, y + iy, k);
                 } else {
                     ggml_tensor_set_f32(output, new_value, x + ix, y + iy, k);
                 }
