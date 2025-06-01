@@ -262,20 +262,17 @@ public:
         bool loaded = false;
         if (vae_path.size() > 0) {
             LOG_INFO("loading vae from '%s'", vae_path.c_str());
-            loaded = model_loader.init_from_file(vae_path, "vae.");
+            loaded = model_loader.init_from_file(vae_path, "first_stage_model.");
             if (!loaded) {
                 LOG_WARN("loading vae from '%s' failed", vae_path.c_str());
             }
         }
-        if (!loaded && model_path.size() > 0) {
-            vae_load_from_model:
+        if (!loaded && (model_path.size() > 0)) {
             LOG_INFO("loading vae from '%s'", model_path.c_str());
             if (!model_loader.init_from_file(model_path)) {
                 LOG_ERROR("loading vae from '%s' failed", model_path.c_str());
                 return false;
             }
-        } else {
-            return false;
         }
 
         model_loader.ignore_tensors.insert("cond_stage_model.transformer");
