@@ -244,24 +244,27 @@ __STATIC_INLINE__ ggml_tensor* load_tensor_from_file(ggml_context* ctx, const st
     return tensor;
 }
 
-// __STATIC_INLINE__ void save_tensor_to_file(const std::string& file_name, ggml_tensor* tensor, const std::string & name) {
-//     std::string file_name_ = file_name + ".tensor";
-//     std::string name_ = name;
-//     std::ofstream file("./" + file_name_, std::ios::binary);
-//     file.write(reinterpret_cast<char*>(&tensor->n_dims), sizeof(tensor->n_dims));
-//     int len = (int)name_.size();
-//     file.write(reinterpret_cast<char*>(&len), sizeof(len));
-//     int ttype = (int)tensor->type;
-//     file.write(reinterpret_cast<char*>(&ttype), sizeof(ttype));
-//     for (int i = 0; i < tensor->n_dims; ++i) {
-//         int ne_ = (int) tensor->ne[i];
-//         file.write(reinterpret_cast<char*>(&ne_), sizeof(ne_));
-//     }
-//     file.write(&name_[0], len);
-//     char* data = nullptr;
-//     file.write((char*)tensor->data, ggml_nbytes(tensor));
-//     file.close();
-// }
+__STATIC_INLINE__ void save_tensor_to_file(const std::string& file_name, ggml_tensor* tensor, const std::string & name) {
+    //std::string file_name_ = file_name + ".tensor";
+    //std::string name_ = name;
+    std::ofstream file(file_name, std::ios::binary);
+    
+    int32_t n_dims = ggml_n_dims(tensor);
+
+    file.write(reinterpret_cast<char*>(&n_dims), sizeof(n_dims));
+    int32_t len = (int)name.size();
+    file.write(reinterpret_cast<char*>(&len), sizeof(len));
+    int32_t ttype = (int)tensor->type;
+    file.write(reinterpret_cast<char*>(&ttype), sizeof(ttype));
+    for (int i = 0; i < n_dims; ++i) {
+        int ne_ = (int) tensor->ne[i];
+        file.write(reinterpret_cast<char*>(&ne_), sizeof(ne_));
+    }
+    file.write(&name[0], len);
+    //char* data = nullptr;
+    file.write((char*)tensor->data, ggml_nbytes(tensor));
+    file.close();
+}
 
 __STATIC_INLINE__ void copy_ggml_tensor(struct ggml_tensor* dst, struct ggml_tensor* src) {
     if (dst->type == src->type) {

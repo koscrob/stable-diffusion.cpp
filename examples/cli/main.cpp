@@ -946,7 +946,8 @@ int main(int argc, const char* argv[]) {
 
     sd_image_t* results;
     if (params.mode == TXT2IMG) {
-        results = txt2img(sd_ctx,
+        results = txt2img(params.output_path.c_str(),
+                          sd_ctx,
                           params.prompt.c_str(),
                           params.negative_prompt.c_str(),
                           params.clip_skip,
@@ -1012,7 +1013,8 @@ int main(int argc, const char* argv[]) {
             free_sd_ctx(sd_ctx);
             return 0;
         } else {
-            results = img2img(sd_ctx,
+            results = img2img(params.output_path.c_str(),
+                              sd_ctx,
                               input_image,
                               mask_image,
                               params.prompt.c_str(),
@@ -1099,7 +1101,7 @@ int main(int argc, const char* argv[]) {
         if (results[i].data == NULL) {
             continue;
         }
-        std::string final_image_path = i > 0 ? dummy_name + "_" + std::to_string(i + 1) + ext : dummy_name + ext;
+        std::string final_image_path = params.batch_count > 1 ? dummy_name + "_" + std::to_string(i + 1) + ext : dummy_name + ext;
         if(is_jpg) {
             stbi_write_jpg(final_image_path.c_str(), results[i].width, results[i].height, results[i].channel,
                            results[i].data, 90, get_image_params(params, params.seed + i).c_str());

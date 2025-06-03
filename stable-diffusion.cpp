@@ -1337,7 +1337,8 @@ void free_sd_ctx(sd_ctx_t* sd_ctx) {
     free(sd_ctx);
 }
 
-sd_image_t* generate_image(sd_ctx_t* sd_ctx,
+sd_image_t* generate_image(std::string filename,
+                           sd_ctx_t* sd_ctx,
                            struct ggml_context* work_ctx,
                            ggml_tensor* init_latent,
                            std::string prompt,
@@ -1630,6 +1631,15 @@ sd_image_t* generate_image(sd_ctx_t* sd_ctx,
         int64_t sampling_end = ggml_time_ms();
         LOG_INFO("sampling completed, taking %.2fs", (sampling_end - sampling_start) * 1.0f / 1000);
         final_latents.push_back(x_0);
+
+        // Save the latent to a file.
+        // TODO: Make latent dumping configurable.
+        if (!filename.empty()) {
+            std::string outname = filename.substr(0, filename.find_last_of("."));
+            outname += "_" + std::to_string(b + 1) + ".latent";
+            save_tensor_to_file(outname, x_0, "latent");
+            LOG_INFO("Latent saved to: \"%s\"", outname.c_str());
+        }
     }
 
     if (sd_ctx->sd->free_params_immediately) {
@@ -1678,7 +1688,8 @@ sd_image_t* generate_image(sd_ctx_t* sd_ctx,
     return result_images;
 }
 
-sd_image_t* txt2img(sd_ctx_t* sd_ctx,
+sd_image_t* txt2img(const char* filename,
+                    sd_ctx_t* sd_ctx,
                     const char* prompt_c_str,
                     const char* negative_prompt_c_str,
                     int clip_skip,
@@ -1755,7 +1766,8 @@ sd_image_t* txt2img(sd_ctx_t* sd_ctx,
         LOG_WARN("This is an inpainting model, this should only be used in img2img mode with a mask");
     }
 
-    sd_image_t* result_images = generate_image(sd_ctx,
+    sd_image_t* result_images = generate_image(filename,
+                                               sd_ctx,
                                                work_ctx,
                                                init_latent,
                                                prompt_c_str,
@@ -1787,7 +1799,8 @@ sd_image_t* txt2img(sd_ctx_t* sd_ctx,
     return result_images;
 }
 
-sd_image_t* img2img(sd_ctx_t* sd_ctx,
+sd_image_t* img2img(const char* filename,
+                    sd_ctx_t* sd_ctx,
                     sd_image_t init_image,
                     sd_image_t mask,
                     const char* prompt_c_str,
@@ -1935,7 +1948,8 @@ sd_image_t* img2img(sd_ctx_t* sd_ctx,
     std::vector<float> sigma_sched;
     sigma_sched.assign(sigmas.begin() + sample_steps - t_enc - 1, sigmas.end());
 
-    sd_image_t* result_images = generate_image(sd_ctx,
+    sd_image_t* result_images = generate_image(filename,
+                                               sd_ctx,
                                                work_ctx,
                                                init_latent,
                                                prompt_c_str,

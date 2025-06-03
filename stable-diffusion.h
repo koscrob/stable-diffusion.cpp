@@ -154,7 +154,8 @@ SD_API sd_ctx_t* new_sd_ctx(const char* model_path,
 
 SD_API void free_sd_ctx(sd_ctx_t* sd_ctx);
 
-SD_API sd_image_t* txt2img(sd_ctx_t* sd_ctx,
+SD_API sd_image_t* txt2img(const char* filename,
+                           sd_ctx_t* sd_ctx,
                            const char* prompt,
                            const char* negative_prompt,
                            int clip_skip,
@@ -178,7 +179,8 @@ SD_API sd_image_t* txt2img(sd_ctx_t* sd_ctx,
                            float skip_layer_start,
                            float skip_layer_end);
 
-SD_API sd_image_t* img2img(sd_ctx_t* sd_ctx,
+SD_API sd_image_t* img2img(const char* filename,
+                           sd_ctx_t* sd_ctx,
                            sd_image_t init_image,
                            sd_image_t mask_image,
                            const char* prompt,
