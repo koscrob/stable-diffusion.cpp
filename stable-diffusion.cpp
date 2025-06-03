@@ -516,14 +516,13 @@ public:
             // first_stage_model->get_param_tensors(tensors, "first_stage_model.");
 
             if (control_net_path.size() > 0) {
-                ggml_backend_t controlnet_backend = NULL;
                 if (control_net_cpu && !ggml_backend_is_cpu(backend)) {
                     LOG_DEBUG("ControlNet: Using CPU backend");
-                    controlnet_backend = ggml_backend_cpu_init();
+                    control_net_backend = ggml_backend_cpu_init();
                 } else {
-                    controlnet_backend = backend;
+                    control_net_backend = backend;
                 }
-                control_net = std::make_shared<ControlNet>(controlnet_backend, model_loader.tensor_storages_types, version);
+                control_net = std::make_shared<ControlNet>(control_net_backend, model_loader.tensor_storages_types, version);
             }
 
             if (id_embeddings_path.find("v2") != std::string::npos) {
@@ -818,7 +817,7 @@ public:
     }
 
     void apply_loras(const std::unordered_map<std::string, float>& lora_state, bool update_state = false) {
-        if (lora_state.size() > 0 && model_wtype != GGML_TYPE_F16 && model_wtype != GGML_TYPE_F32) {
+        if (lora_state.size() > 0 && model_wtype != GGML_TYPE_F16 && model_wtype != GGML_TYPE_BF16 && model_wtype != GGML_TYPE_F32) {
             LOG_WARN("In quantized models when applying LoRA, the images have poor quality.");
         }
         std::unordered_map<std::string, float> lora_state_diff;
@@ -960,16 +959,6 @@ public:
                         float skip_layer_end         = 0.2,
                         ggml_tensor* noise_mask      = nullptr) {
         LOG_DEBUG("Sample");
-        struct ggml_init_params params;
-        size_t data_size = ggml_row_size(init_latent->type, init_latent->ne[0]);
-        for (int i = 1; i < 4; i++) {
-            data_size *= init_latent->ne[i];
-        }
-        data_size += 1024;
-        params.mem_size       = data_size * 3;
-        params.mem_buffer     = NULL;
-        params.no_alloc       = false;
-        ggml_context* tmp_ctx = ggml_init(params);
 
         size_t steps = sigmas.size() - 1;
         // noise = load_tensor_from_file(work_ctx, "./rand0.bin");
