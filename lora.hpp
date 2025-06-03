@@ -159,7 +159,7 @@ struct LoraModel : public GGMLRunner {
 
         LOG_DEBUG("lora type: \"%s\"/\"%s\"", lora_downs[type].c_str(), lora_ups[type].c_str());
 
-        LOG_DEBUG("finished loaded lora");
+        LOG_DEBUG("finished loading lora");
         return true;
     }
 

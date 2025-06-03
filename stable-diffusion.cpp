@@ -817,6 +817,7 @@ public:
     }
 
     void apply_loras(const std::unordered_map<std::string, float>& lora_state, bool update_state = false) {
+        int64_t t0 = ggml_time_ms();
         if (lora_state.size() > 0 && model_wtype != GGML_TYPE_F16 && model_wtype != GGML_TYPE_BF16 && model_wtype != GGML_TYPE_F32) {
             LOG_WARN("In quantized models when applying LoRA, the images have poor quality.");
         }
@@ -848,6 +849,8 @@ public:
         if (update_state) {
             curr_lora_state = lora_state;
         }
+        int64_t t1 = ggml_time_ms();
+        LOG_INFO("apply_loras completed, taking %.2fs", (t1 - t0) * 1.0f / 1000);
     }
 
     ggml_tensor* id_encoder(ggml_context* work_ctx,
@@ -1385,10 +1388,7 @@ sd_image_t* generate_image(sd_ctx_t* sd_ctx,
     prompt = result_pair.second;
     LOG_DEBUG("prompt after extract and remove lora: \"%s\"", prompt.c_str());
 
-    int64_t t0 = ggml_time_ms();
-    //sd_ctx->sd->apply_loras(lora_f2m);
-    int64_t t1 = ggml_time_ms();
-    //LOG_INFO("apply_loras completed, taking %.2fs", (t1 - t0) * 1.0f / 1000);
+    int64_t t0, t1;
 
     // Photo Maker
     std::string prompt_text_only;
