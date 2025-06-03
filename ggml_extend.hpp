@@ -1416,10 +1416,12 @@ protected:
     std::pair<int, int> stride;
     std::pair<int, int> padding;
     std::pair<int, int> dilation;
+    bool allow_bf16;
     bool bias;
 
     void init_params(struct ggml_context* ctx, std::map<std::string, enum ggml_type>& tensor_types, const std::string prefix = "") {
         enum ggml_type wtype = (tensor_types.find(prefix + "weight") != tensor_types.end()) ? tensor_types[prefix + "weight"] : GGML_TYPE_F16;
+        wtype                = (wtype == GGML_TYPE_BF16 && allow_bf16) ? wtype : GGML_TYPE_F16;
         params["weight"]     = ggml_new_tensor_4d(ctx, wtype, kernel_size.second, kernel_size.first, in_channels, out_channels);
         if (bias) {
             enum ggml_type wtype = GGML_TYPE_F32;  // (tensor_types.find(prefix + "bias") != tensor_types.end()) ? tensor_types[prefix + "bias"] : GGML_TYPE_F32;
@@ -1434,7 +1436,8 @@ public:
            std::pair<int, int> stride   = {1, 1},
            std::pair<int, int> padding  = {0, 0},
            std::pair<int, int> dilation = {1, 1},
-           bool bias                    = true)
+           bool bias                    = true,
+           bool allow_bf16              = false)
         : in_channels(in_channels),
           out_channels(out_channels),
           kernel_size(kernel_size),

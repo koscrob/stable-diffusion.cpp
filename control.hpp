@@ -32,7 +32,7 @@ public:
     int model_channels  = 320;
     int adm_in_channels = 2816;  // only for VERSION_SDXL
 
-    ControlNetBlock(SDVersion version = VERSION_SD1)
+    ControlNetBlock(SDVersion version = VERSION_SD1, bool allow_bf16 = false)
         : version(version) {
         if (sd_version_is_sd2(version)) {
             context_dim       = 1024;
@@ -65,7 +65,7 @@ public:
         }
 
         // input_blocks
-        blocks["input_blocks.0.0"] = std::shared_ptr<GGMLBlock>(new Conv2d(in_channels, model_channels, {3, 3}, {1, 1}, {1, 1}));
+        blocks["input_blocks.0.0"] = std::shared_ptr<GGMLBlock>(new Conv2d(in_channels, model_channels, {3, 3}, {1, 1}, {1, 1}, {1, 1}, true, allow_bf16));
 
         std::vector<int> input_block_chans;
         input_block_chans.push_back(model_channels);
@@ -91,21 +91,21 @@ public:
 
         blocks["zero_convs.0.0"] = std::shared_ptr<GGMLBlock>(make_zero_conv(model_channels));
 
-        blocks["input_hint_block.0"] = std::shared_ptr<GGMLBlock>(new Conv2d(hint_channels, 16, {3, 3}, {1, 1}, {1, 1}));
+        blocks["input_hint_block.0"] = std::shared_ptr<GGMLBlock>(new Conv2d(hint_channels, 16, {3, 3}, {1, 1}, {1, 1}, {1, 1}, true, allow_bf16));
         // nn.SiLU()
-        blocks["input_hint_block.2"] = std::shared_ptr<GGMLBlock>(new Conv2d(16, 16, {3, 3}, {1, 1}, {1, 1}));
+        blocks["input_hint_block.2"] = std::shared_ptr<GGMLBlock>(new Conv2d(16, 16, {3, 3}, {1, 1}, {1, 1}, {1, 1}, true, allow_bf16));
         // nn.SiLU()
-        blocks["input_hint_block.4"] = std::shared_ptr<GGMLBlock>(new Conv2d(16, 32, {3, 3}, {2, 2}, {1, 1}));
+        blocks["input_hint_block.4"] = std::shared_ptr<GGMLBlock>(new Conv2d(16, 32, {3, 3}, {2, 2}, {1, 1}, {1, 1}, true, allow_bf16));
         // nn.SiLU()
-        blocks["input_hint_block.6"] = std::shared_ptr<GGMLBlock>(new Conv2d(32, 32, {3, 3}, {1, 1}, {1, 1}));
+        blocks["input_hint_block.6"] = std::shared_ptr<GGMLBlock>(new Conv2d(32, 32, {3, 3}, {1, 1}, {1, 1}, {1, 1}, true, allow_bf16));
         // nn.SiLU()
-        blocks["input_hint_block.8"] = std::shared_ptr<GGMLBlock>(new Conv2d(32, 96, {3, 3}, {2, 2}, {1, 1}));
+        blocks["input_hint_block.8"] = std::shared_ptr<GGMLBlock>(new Conv2d(32, 96, {3, 3}, {2, 2}, {1, 1}, {1, 1}, true, allow_bf16));
         // nn.SiLU()
-        blocks["input_hint_block.10"] = std::shared_ptr<GGMLBlock>(new Conv2d(96, 96, {3, 3}, {1, 1}, {1, 1}));
+        blocks["input_hint_block.10"] = std::shared_ptr<GGMLBlock>(new Conv2d(96, 96, {3, 3}, {1, 1}, {1, 1}, {1, 1}, true, allow_bf16));
         // nn.SiLU()
-        blocks["input_hint_block.12"] = std::shared_ptr<GGMLBlock>(new Conv2d(96, 256, {3, 3}, {2, 2}, {1, 1}));
+        blocks["input_hint_block.12"] = std::shared_ptr<GGMLBlock>(new Conv2d(96, 256, {3, 3}, {2, 2}, {1, 1}, {1, 1}, true, allow_bf16));
         // nn.SiLU()
-        blocks["input_hint_block.14"] = std::shared_ptr<GGMLBlock>(new Conv2d(256, model_channels, {3, 3}, {1, 1}, {1, 1}));
+        blocks["input_hint_block.14"] = std::shared_ptr<GGMLBlock>(new Conv2d(256, model_channels, {3, 3}, {1, 1}, {1, 1}, {1, 1}, true, allow_bf16));
 
         size_t len_mults = channel_mult.size();
         for (int i = 0; i < len_mults; i++) {
@@ -319,7 +319,7 @@ struct ControlNet : public GGMLRunner {
     ControlNet(ggml_backend_t backend,
                std::map<std::string, enum ggml_type>& tensor_types,
                SDVersion version = VERSION_SD1)
-        : GGMLRunner(backend), control_net(version) {
+        : GGMLRunner(backend), control_net(version, ggml_backend_is_cpu(backend)) {
         control_net.init(params_ctx, tensor_types, "");
     }
 
