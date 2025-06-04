@@ -154,6 +154,8 @@ SD_API sd_ctx_t* new_sd_ctx(const char* model_path,
 
 SD_API void free_sd_ctx(sd_ctx_t* sd_ctx);
 
+SD_API sd_image_t* latent2img(const char* filename, sd_ctx_t* sd_ctx);
+
 SD_API sd_image_t* txt2img(const char* filename,
                            sd_ctx_t* sd_ctx,
                            const char* prompt,

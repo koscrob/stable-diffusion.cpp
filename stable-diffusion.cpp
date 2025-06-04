@@ -177,6 +177,7 @@ public:
 
     bool load_clip_l() {
         tensors.clear();
+        cond_stage_model->alloc_params_buffer();
         cond_stage_model->get_param_tensors(tensors);
 
         ModelLoader model_loader;
@@ -215,6 +216,7 @@ public:
 
     bool load_diffusion_model() {
         tensors.clear();
+        diffusion_model->alloc_params_buffer();
         diffusion_model->get_param_tensors(tensors);
 
         ModelLoader model_loader;
@@ -255,6 +257,7 @@ public:
         }
 
         tensors.clear();
+        first_stage_model->alloc_params_buffer();
         first_stage_model->get_param_tensors(tensors, "first_stage_model");
 
         ModelLoader model_loader;
@@ -488,10 +491,10 @@ public:
                 diffusion_model = std::make_shared<UNetModel>(backend, model_loader.tensor_storages_types, version, diffusion_flash_attn);
             }
 
-            cond_stage_model->alloc_params_buffer();
+            //cond_stage_model->alloc_params_buffer();
             //cond_stage_model->get_param_tensors(tensors);
 
-            diffusion_model->alloc_params_buffer();
+            //diffusion_model->alloc_params_buffer();
             //diffusion_model->get_param_tensors(tensors);
 
             if (!use_tiny_autoencoder) {
@@ -502,7 +505,7 @@ public:
                     vae_backend = backend;
                 }
                 first_stage_model = std::make_shared<AutoEncoderKL>(vae_backend, model_loader.tensor_storages_types, "first_stage_model", vae_decode_only, false, version);
-                first_stage_model->alloc_params_buffer();
+                //first_stage_model->alloc_params_buffer();
                 //first_stage_model->get_param_tensors(tensors, "first_stage_model");
             } else {
                 if (vae_on_cpu && !ggml_backend_is_cpu(backend)) {
@@ -1688,6 +1691,56 @@ sd_image_t* generate_image(std::string filename,
     return result_images;
 }
 
+sd_image_t* latent2img(const char* filename, sd_ctx_t* sd_ctx) {
+    if (sd_ctx == NULL) {
+        return NULL;
+    }
+
+    ggml_init_params params = {0};
+    params.mem_size = static_cast<size_t>(10 * 1024 * 1024);  // 10 MB
+    if (sd_version_is_sd3(sd_ctx->sd->version)) {
+        params.mem_size *= 3;
+    }
+    if (sd_version_is_flux(sd_ctx->sd->version)) {
+        params.mem_size *= 4;
+    }
+    params.mem_size += 2048 * 2048 * 3 * sizeof(float);
+    params.mem_buffer = NULL;
+    params.no_alloc   = false;
+
+    ggml_context* work_ctx = ggml_init(params);
+    if (!work_ctx) {
+        LOG_ERROR("ggml_init() failed");
+        return NULL;
+    }
+
+    ggml_tensor* latent = load_tensor_from_file(work_ctx, std::string(filename));
+    LOG_INFO("Latent loaded from: \"%s\"", filename);
+
+    uint32_t width  = latent->ne[0] * 8;
+    uint32_t height = latent->ne[1] * 8;
+
+    // Decode to image
+    if (!sd_ctx->sd->load_vae(StableDiffusionGGML::SD_VAE_DECODER)) {
+        abort();
+    }
+    ggml_tensor* decoded_image = sd_ctx->sd->decode_first_stage(work_ctx, latent);
+    if (sd_ctx->sd->free_params_immediately && !sd_ctx->sd->use_tiny_autoencoder) {
+        sd_ctx->sd->first_stage_model->free_params_buffer();
+    }
+    
+    sd_image_t* result_image = (sd_image_t*)calloc(1, sizeof(sd_image_t));
+    if (result_image != NULL) {
+        result_image->width   = width;
+        result_image->height  = height;
+        result_image->channel = 3;
+        result_image->data    = sd_tensor_to_image(decoded_image);
+    }
+    ggml_free(work_ctx);
+
+    return result_image;
+}
+
 sd_image_t* txt2img(const char* filename,
                     sd_ctx_t* sd_ctx,
                     const char* prompt_c_str,
@@ -1872,6 +1925,10 @@ sd_image_t* img2img(const char* filename,
 
     ggml_tensor* masked_image;
 
+    if (!sd_ctx->sd->load_vae(StableDiffusionGGML::SD_VAE_ENCODER)) {
+        abort();
+    }
+
     if (sd_version_is_inpaint(sd_ctx->sd->version)) {
         int64_t mask_channels = 1;
         if (sd_ctx->sd->version == VERSION_FLUX_FILL) {
@@ -1939,6 +1996,10 @@ sd_image_t* img2img(const char* filename,
     print_ggml_tensor(init_latent, true);
     size_t t1 = ggml_time_ms();
     LOG_INFO("encode_first_stage completed, taking %.2fs", (t1 - t0) * 1.0f / 1000);
+
+    if (sd_ctx->sd->free_params_immediately && !sd_ctx->sd->use_tiny_autoencoder) {
+        sd_ctx->sd->first_stage_model->free_params_buffer();
+    }
 
     std::vector<float> sigmas = sd_ctx->sd->denoiser->get_sigmas(sample_steps);
     size_t t_enc              = static_cast<size_t>(sample_steps * strength);

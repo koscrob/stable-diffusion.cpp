@@ -58,6 +58,7 @@ const char* modes_str[] = {
     "img2img",
     "img2vid",
     "convert",
+    "decode",
 };
 
 enum SDMode {
@@ -65,6 +66,7 @@ enum SDMode {
     IMG2IMG,
     IMG2VID,
     CONVERT,
+    DECODE,
     MODE_COUNT
 };
 
@@ -185,7 +187,7 @@ void print_usage(int argc, const char* argv[]) {
     printf("\n");
     printf("arguments:\n");
     printf("  -h, --help                         show this help message and exit\n");
-    printf("  -M, --mode [MODEL]                 run mode (txt2img or img2img or convert, default: txt2img)\n");
+    printf("  -M, --mode [MODEL]                 run mode (txt2img or img2img or decode or convert, default: txt2img)\n");
     printf("  -t, --threads N                    number of threads to use during computation (default: -1)\n");
     printf("                                     If threads <= 0, then threads will be set to the number of CPU physical cores\n");
     printf("  -m, --model [MODEL]                path to full model\n");
@@ -205,7 +207,7 @@ void print_usage(int argc, const char* argv[]) {
     printf("  --type [TYPE]                      weight type (examples: f32, f16, q4_0, q4_1, q5_0, q5_1, q8_0, q2_K, q3_K, q4_K)\n");
     printf("                                     If not specified, the default is the type of the weight file\n");
     printf("  --lora-model-dir [DIR]             lora model directory\n");
-    printf("  -i, --init-img [IMAGE]             path to the input image, required by img2img\n");
+    printf("  -i, --init-img [IMAGE]             path to the input image, required by img2img and decode\n");
     printf("  --mask [MASK]                      path to the mask image, required by img2img with mask\n");
     printf("  --control-image [IMAGE]            path to image condition, control net\n");
     printf("  -o, --output OUTPUT                path to write result image to (default: ./output.png)\n");
@@ -273,7 +275,7 @@ void parse_args(int argc, const char** argv, SDParams& params) {
             }
             if (mode_found == -1) {
                 fprintf(stderr,
-                        "error: invalid mode %s, must be one of [txt2img, img2img, img2vid, convert]\n",
+                        "error: invalid mode %s, must be one of [txt2img, img2img, img2vid, decode, convert]\n",
                         mode_selected);
                 exit(1);
             }
@@ -645,19 +647,19 @@ void parse_args(int argc, const char** argv, SDParams& params) {
         params.n_threads = get_num_physical_cores();
     }
 
-    if (params.mode != CONVERT && params.mode != IMG2VID && params.prompt.length() == 0) {
+    if (params.mode != CONVERT && params.mode != DECODE && params.mode != IMG2VID && params.prompt.length() == 0) {
         fprintf(stderr, "error: the following arguments are required: prompt\n");
         print_usage(argc, argv);
         exit(1);
     }
 
-    if (params.model_path.length() == 0 && params.diffusion_model_path.length() == 0) {
+    if (params.mode != DECODE && params.model_path.length() == 0 && params.diffusion_model_path.length() == 0) {
         fprintf(stderr, "error: the following arguments are required: model_path/diffusion_model\n");
         print_usage(argc, argv);
         exit(1);
     }
 
-    if ((params.mode == IMG2IMG || params.mode == IMG2VID) && params.input_path.length() == 0) {
+    if ((params.mode == IMG2IMG || params.mode == IMG2VID || params.mode == DECODE) && params.input_path.length() == 0) {
         fprintf(stderr, "error: when using the img2img mode, the following arguments are required: init-img\n");
         print_usage(argc, argv);
         exit(1);
@@ -970,6 +972,9 @@ int main(int argc, const char* argv[]) {
                           params.slg_scale,
                           params.skip_layer_start,
                           params.skip_layer_end);
+    } else if (params.mode == DECODE) {
+        params.batch_count = 1;
+        results = latent2img(params.input_path.c_str(), sd_ctx);
     } else {
         sd_image_t input_image = {(uint32_t)params.width,
                                   (uint32_t)params.height,
