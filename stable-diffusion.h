@@ -34,10 +34,11 @@ enum rng_type_t {
 };
 
 enum sample_method_t {
-    EULER_A,
     EULER,
+    EULER_A,
     HEUN,
     DPM2,
+    DPM2_A,
     DPMPP2S_A,
     DPMPP2M,
     DPMPP2Mv2,

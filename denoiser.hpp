@@ -543,9 +543,9 @@ static struct ggml_tensor* sample_euler_ancestral(
     denoise_cb_t model,
     ggml_tensor* x,
     std::vector<float> sigmas,
+    std::function<std::vector<float>(float,float)> noise_sampler = NULL,
     float eta = 1.f,
-    float s_noise = 1.f,
-    std::function<std::vector<float>(float,float)> noise_sampler = NULL
+    float s_noise = 1.f
 ) {
     noise_sampler = noise_sampler ? noise_sampler : default_noise_sampler(x);
     auto d        = ggml_dup_tensor(work_ctx, x);
@@ -658,6 +658,46 @@ static struct ggml_tensor* sample_dpm_2(
     return x;
 }
 
+// Ancestral sampling with DPM-Solver second-order steps.
+static struct ggml_tensor* sample_dpm_2_ancestral(
+    ggml_context* work_ctx,
+    denoise_cb_t model,
+    ggml_tensor* x,
+    std::vector<float> sigmas,
+    std::function<std::vector<float>(float, float)> noise_sampler = NULL,
+    float eta = 1.f,
+    float s_noise = 1.f
+) {
+    noise_sampler = noise_sampler ? noise_sampler : default_noise_sampler(x);
+    auto d   = ggml_dup_tensor(work_ctx, x);
+    auto d_2 = ggml_dup_tensor(work_ctx, x);
+    auto x_2 = ggml_dup_tensor(work_ctx, x);
+    for (int i = 0; i < sigmas.size() - 1; i++) {
+        auto denoised = model(x, sigmas[i], i + 1);
+        auto [sigma_down, sigma_up] = get_ancestral_step(sigmas[i], sigmas[i + 1], eta);
+        to_d(d, x, sigmas[i], denoised);
+        if (sigma_down == 0.f) {
+            // Euler method
+            float dt = sigma_down - sigmas[i];
+            do_euler_iteration(x, x, d, dt);
+        } else {
+            // DPM-Solver-2
+            float sigma_mid = exp((log(sigmas[i]) + log(sigma_down)) * .5f);
+            float dt_1      = sigma_mid - sigmas[i];
+            float dt_2      = sigma_down - sigmas[i];
+            do_euler_iteration(x_2, x, d, dt_1);
+            auto denoised_2 = model(x_2, sigma_mid, i + 1);
+            to_d(d_2, x_2, sigma_mid, denoised_2);
+            do_euler_iteration(x, x, d_2, dt_2);
+            auto noise = noise_sampler(sigmas[i], sigmas[i + 1]);
+            for (int j = 0; j < ggml_nelements(x); j++) {
+                array_view(x)[j] += noise[j] * s_noise * sigma_up;
+            }
+        }
+    }
+    return x;
+}
+
 // k diffusion reverse ODE: dx = (x - D(x;\sigma)) / \sigma dt; \sigma(t) = t
 static void sample_k_diffusion(sample_method_t method,
                                denoise_cb_t model,
@@ -674,9 +714,10 @@ static void sample_k_diffusion(sample_method_t method,
 
     switch (method) {
         case EULER: sample_euler(work_ctx, model, x, sigmas, rng); break;
-        case EULER_A: sample_euler_ancestral(work_ctx, model, x, sigmas, eta == 0.f ? 1.f : eta, 1.f, noise_sampler); break;
+        case EULER_A: sample_euler_ancestral(work_ctx, model, x, sigmas, noise_sampler); break;
         case HEUN: sample_heun(work_ctx, model, x, sigmas, rng); break;
         case DPM2: sample_dpm_2(work_ctx, model, x, sigmas, rng); break;
+        case DPM2_A: sample_dpm_2_ancestral(work_ctx, model, x, sigmas, noise_sampler); break;
         case DPMPP2S_A: {
             struct ggml_tensor* noise = ggml_dup_tensor(work_ctx, x);
             struct ggml_tensor* d     = ggml_dup_tensor(work_ctx, x);

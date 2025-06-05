@@ -29,10 +29,11 @@ const char* rng_type_to_str[] = {
 
 // Names of the sampler method, same order as enum sample_method in stable-diffusion.h
 const char* sample_method_str[] = {
-    "euler_a",
     "euler",
+    "euler_a",
     "heun",
     "dpm2",
+    "dpm2_a",
     "dpm++2s_a",
     "dpm++2m",
     "dpm++2mv2",
@@ -217,7 +218,7 @@ void print_usage(int argc, const char* argv[]) {
     printf("  --guidance SCALE                   guidance scale for img2img (default: 3.5)\n");
     printf("  --slg-scale SCALE                  skip layer guidance (SLG) scale, only for DiT models: (default: 0)\n");
     printf("                                     0 means disabled, a value of 2.5 is nice for sd3.5 medium\n");
-    printf("  --eta SCALE                        eta, only for EULER_A, DDIM and TCD: (default: 0)\n");
+    printf("  --eta SCALE                        eta in DDIM, only for DDIM and TCD: (default: 0)\n");
     printf("  --skip-layers LAYERS               Layers to skip for SLG steps: (default: [7,8,9])\n");
     printf("  --skip-layer-start START           SLG enabling point: (default: 0.01)\n");
     printf("  --skip-layer-end END               SLG disabling point: (default: 0.2)\n");
