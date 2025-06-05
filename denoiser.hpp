@@ -592,7 +592,7 @@ static struct ggml_tensor* sample_heun(
                 array_view(x)[j] += eps[j] * s_noise * std::sqrt(sigma_hat * sigma_hat - sigmas[i] * sigmas[i]);
             }
         }
-        auto denoised = model(x, sigma_hat, -(i + 1));
+        auto denoised = model(x, sigma_hat, i + 1);
         to_d(d, x, sigma_hat, denoised);
         float dt = sigmas[i + 1] - sigma_hat;
         if (sigmas[i + 1] == 0) {
@@ -607,6 +607,52 @@ static struct ggml_tensor* sample_heun(
                 array_view(d)[j] = (array_view(d)[j] + array_view(d_2)[j]) * .5f;
             }
             do_euler_iteration(x, x, d, dt);
+        }
+    }
+    return x;
+}
+
+// A sampler inspired by DPM-Solver-2 and Algorithm 2 from Karras et al. (2022).
+static struct ggml_tensor* sample_dpm_2(
+    ggml_context* work_ctx,
+    denoise_cb_t model,
+    ggml_tensor* x,
+    std::vector<float> sigmas,
+    std::shared_ptr<RNG> rng,
+    float s_churn = 0.f,
+    float s_tmin = 0.f,
+    float s_tmax = std::numeric_limits<float>::infinity(),
+    float s_noise = 1.f
+) {
+    auto d   = ggml_dup_tensor(work_ctx, x);
+    auto d_2 = ggml_dup_tensor(work_ctx, x);
+    auto x_2 = ggml_dup_tensor(work_ctx, x);
+    for (int i = 0; i < sigmas.size() - 1; i++) {
+        float gamma = s_tmin <= sigmas[i] && sigmas[i] <= s_tmax
+            ? std::min<float>(s_churn / (sigmas.size() - 1), std::sqrt(2.f) - 1.f)
+            : 0.f;
+        float sigma_hat = sigmas[i] * (gamma + 1);
+        if (gamma > 0) {
+            auto eps = rng->randn(ggml_nelements(x));
+            for (int j = 0; j < ggml_nelements(x); j++) {
+                array_view(x)[j] += eps[j] * s_noise * std::sqrt(sigma_hat * sigma_hat - sigmas[i] * sigmas[i]);
+            }
+        }
+        auto denoised = model(x, sigma_hat, i + 1);
+        to_d(d, x, sigma_hat, denoised);
+        if (sigmas[i + 1] == 0) {
+            // Euler method.
+            float dt = sigmas[i + 1] - sigma_hat;
+            do_euler_iteration(x, x, d, dt);
+        } else {
+            // DPM-Solver-2
+            float sigma_mid = exp((log(sigma_hat) + log(sigmas[i + 1])) * .5f);
+            float dt_1      = sigma_mid - sigma_hat;
+            float dt_2      = sigmas[i + 1] - sigma_hat;
+            do_euler_iteration(x_2, x, d, dt_1);
+            auto denoised_2 = model(x_2, sigma_mid, i + 1);
+            to_d(d_2, x_2, sigma_mid, denoised_2);
+            do_euler_iteration(x, x, d_2, dt_2);
         }
     }
     return x;
@@ -630,58 +676,7 @@ static void sample_k_diffusion(sample_method_t method,
         case EULER: sample_euler(work_ctx, model, x, sigmas, rng); break;
         case EULER_A: sample_euler_ancestral(work_ctx, model, x, sigmas, eta == 0.f ? 1.f : eta, 1.f, noise_sampler); break;
         case HEUN: sample_heun(work_ctx, model, x, sigmas, rng); break;
-        case DPM2: {
-            struct ggml_tensor* d  = ggml_dup_tensor(work_ctx, x);
-            struct ggml_tensor* x2 = ggml_dup_tensor(work_ctx, x);
-
-            for (int i = 0; i < steps; i++) {
-                // denoise
-                ggml_tensor* denoised = model(x, sigmas[i], i + 1);
-
-                // d = (x - denoised) / sigma
-                {
-                    float* vec_d        = (float*)d->data;
-                    float* vec_x        = (float*)x->data;
-                    float* vec_denoised = (float*)denoised->data;
-
-                    for (int j = 0; j < ggml_nelements(x); j++) {
-                        vec_d[j] = (vec_x[j] - vec_denoised[j]) / sigmas[i];
-                    }
-                }
-
-                if (sigmas[i + 1] == 0) {
-                    // Euler step
-                    // x = x + d * dt
-                    float dt     = sigmas[i + 1] - sigmas[i];
-                    float* vec_d = (float*)d->data;
-                    float* vec_x = (float*)x->data;
-
-                    for (int j = 0; j < ggml_nelements(x); j++) {
-                        vec_x[j] = vec_x[j] + vec_d[j] * dt;
-                    }
-                } else {
-                    // DPM-Solver-2
-                    float sigma_mid = exp(0.5f * (log(sigmas[i]) + log(sigmas[i + 1])));
-                    float dt_1      = sigma_mid - sigmas[i];
-                    float dt_2      = sigmas[i + 1] - sigmas[i];
-
-                    float* vec_d  = (float*)d->data;
-                    float* vec_x  = (float*)x->data;
-                    float* vec_x2 = (float*)x2->data;
-                    for (int j = 0; j < ggml_nelements(x); j++) {
-                        vec_x2[j] = vec_x[j] + vec_d[j] * dt_1;
-                    }
-
-                    ggml_tensor* denoised = model(x2, sigma_mid, i + 1);
-                    float* vec_denoised   = (float*)denoised->data;
-                    for (int j = 0; j < ggml_nelements(x); j++) {
-                        float d2 = (vec_x2[j] - vec_denoised[j]) / sigma_mid;
-                        vec_x[j] = vec_x[j] + d2 * dt_2;
-                    }
-                }
-            }
-
-        } break;
+        case DPM2: sample_dpm_2(work_ctx, model, x, sigmas, rng); break;
         case DPMPP2S_A: {
             struct ggml_tensor* noise = ggml_dup_tensor(work_ctx, x);
             struct ggml_tensor* d     = ggml_dup_tensor(work_ctx, x);
