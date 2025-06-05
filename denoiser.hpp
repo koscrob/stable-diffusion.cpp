@@ -468,6 +468,58 @@ struct FluxFlowDenoiser : public Denoiser {
 
 typedef std::function<ggml_tensor*(ggml_tensor*, float, int)> denoise_cb_t;
 
+// Converts a denoiser output to a Karras ODE derivative.
+static inline void to_d(ggml_tensor* d, ggml_tensor* x, float sigma, ggml_tensor* denoised) {
+    float* vec_d        = (float*)d->data;
+    float* vec_x        = (float*)x->data;
+    float* vec_denoised = (float*)denoised->data;
+    for (int i = 0; i < ggml_nelements(d); i++) {
+        vec_d[i] = (vec_x[i] - vec_denoised[i]) / sigma;
+    }
+}
+
+// Implements Algorithm 2 (Euler steps) from Karras et al. (2022).
+static struct ggml_tensor* sample_euler(
+    ggml_context* work_ctx,
+    denoise_cb_t model,
+    ggml_tensor* x,
+    std::vector<float> sigmas, 
+    std::shared_ptr<RNG> rng,
+    float s_churn = 0.f, 
+    float s_tmin = 0.f, 
+    float s_tmax = std::numeric_limits<float>::infinity(), 
+    float s_noise = 1.f
+) {
+    struct ggml_tensor* d = ggml_dup_tensor(work_ctx, x);
+    struct ggml_tensor* eps = ggml_dup_tensor(work_ctx, x);
+    for (int i = 0; i < sigmas.size() - 1; i += 1) {
+        float gamma = s_tmin <= sigmas[i] && sigmas[i] <= s_tmax
+            ? std::min<float>(s_churn / (sigmas.size() - 1), pow(2.f, .5f) - 1.f)
+            : 0.f;
+        float sigma_hat = sigmas[i] * (gamma + 1);
+        if (gamma > 0) {
+            std::vector<float> eps = rng->randn(ggml_nelements(x));
+            float* vec_x = (float*)x->data;
+            for (int j = 0; j < ggml_nelements(x); j++) {
+                vec_x[j] += eps[j] * s_noise * pow(sigma_hat * sigma_hat - sigmas[i] * sigmas[i], 0.5);
+            }
+        }
+        ggml_tensor* denoised = model(x, sigma_hat, i + 1);
+        to_d(d, x, sigma_hat, denoised);
+        float dt = sigmas[i + 1] - sigma_hat;
+        // Euler method
+        {
+            float* vec_d = (float*)d->data;
+            float* vec_x = (float*)x->data;
+
+            for (int j = 0; j < ggml_nelements(x); j++) {
+                vec_x[j] += vec_d[j] * dt;
+            }
+        }
+    }
+    return x;
+}
+
 // k diffusion reverse ODE: dx = (x - D(x;\sigma)) / \sigma dt; \sigma(t) = t
 static void sample_k_diffusion(sample_method_t method,
                                denoise_cb_t model,
@@ -477,8 +529,9 @@ static void sample_k_diffusion(sample_method_t method,
                                std::shared_ptr<RNG> rng,
                                float eta) {
     size_t steps = sigmas.size() - 1;
-    // sample_euler_ancestral
+
     switch (method) {
+        case EULER: x = sample_euler(work_ctx, model, x, sigmas, rng); break;
         case EULER_A: {
             struct ggml_tensor* noise = ggml_dup_tensor(work_ctx, x);
             struct ggml_tensor* d     = ggml_dup_tensor(work_ctx, x);
@@ -528,39 +581,6 @@ static void sample_k_diffusion(sample_method_t method,
                         for (int i = 0; i < ggml_nelements(x); i++) {
                             vec_x[i] = vec_x[i] + vec_noise[i] * sigma_up;
                         }
-                    }
-                }
-            }
-        } break;
-        case EULER:  // Implemented without any sigma churn
-        {
-            struct ggml_tensor* d = ggml_dup_tensor(work_ctx, x);
-
-            for (int i = 0; i < steps; i++) {
-                float sigma = sigmas[i];
-
-                // denoise
-                ggml_tensor* denoised = model(x, sigma, i + 1);
-
-                // d = (x - denoised) / sigma
-                {
-                    float* vec_d        = (float*)d->data;
-                    float* vec_x        = (float*)x->data;
-                    float* vec_denoised = (float*)denoised->data;
-
-                    for (int j = 0; j < ggml_nelements(d); j++) {
-                        vec_d[j] = (vec_x[j] - vec_denoised[j]) / sigma;
-                    }
-                }
-
-                float dt = sigmas[i + 1] - sigma;
-                // x = x + d * dt
-                {
-                    float* vec_d = (float*)d->data;
-                    float* vec_x = (float*)x->data;
-
-                    for (int j = 0; j < ggml_nelements(x); j++) {
-                        vec_x[j] = vec_x[j] + vec_d[j] * dt;
                     }
                 }
             }
