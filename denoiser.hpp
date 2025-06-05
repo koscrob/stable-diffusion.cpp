@@ -468,13 +468,14 @@ struct FluxFlowDenoiser : public Denoiser {
 
 typedef std::function<ggml_tensor*(ggml_tensor*, float, int)> denoise_cb_t;
 
+static inline float* array_view(ggml_tensor* x) {
+    return (float*)x->data;
+}
+
 // Converts a denoiser output to a Karras ODE derivative.
 static inline void to_d(ggml_tensor* d, ggml_tensor* x, float sigma, ggml_tensor* denoised) {
-    float* vec_d        = (float*)d->data;
-    float* vec_x        = (float*)x->data;
-    float* vec_denoised = (float*)denoised->data;
     for (int i = 0; i < ggml_nelements(d); i++) {
-        vec_d[i] = (vec_x[i] - vec_denoised[i]) / sigma;
+        array_view(d)[i] = (array_view(x)[i] - array_view(denoised)[i]) / sigma;
     }
 }
 
@@ -496,11 +497,10 @@ static std::tuple<float, float> get_ancestral_step(float sigma_from, float sigma
     return {sigma_down, sigma_up};
 }
 
-static inline void do_euler_iteration(ggml_tensor* x, ggml_tensor* d, float dt){
-    float* vec_d = (float*)d->data;
-    float* vec_x = (float*)x->data;
-    for (int i = 0; i < ggml_nelements(x); i++) {
-        vec_x[i] += vec_d[i] * dt;
+static inline void do_euler_iteration(ggml_tensor* dst, ggml_tensor* x, ggml_tensor* d, float dt){
+    GGML_ASSERT(ggml_nelements(dst) == ggml_nelements(x) && ggml_nelements(x) == ggml_nelements(d));
+    for (int i = 0; i < ggml_nelements(dst); i++) {
+        array_view(dst)[i] = array_view(x)[i] + array_view(d)[i] * dt;
     }
 }
 
@@ -516,25 +516,23 @@ static struct ggml_tensor* sample_euler(
     float s_tmax = std::numeric_limits<float>::infinity(), 
     float s_noise = 1.f
 ) {
-    struct ggml_tensor* d = ggml_dup_tensor(work_ctx, x);
-    struct ggml_tensor* eps = ggml_dup_tensor(work_ctx, x);
-    for (int i = 0; i < sigmas.size() - 1; i += 1) {
+    auto d = ggml_dup_tensor(work_ctx, x);
+    for (int i = 0; i < sigmas.size() - 1; i++) {
         float gamma = s_tmin <= sigmas[i] && sigmas[i] <= s_tmax
             ? std::min<float>(s_churn / (sigmas.size() - 1), std::sqrt(2.f) - 1.f)
             : 0.f;
         float sigma_hat = sigmas[i] * (gamma + 1);
         if (gamma > 0) {
-            std::vector<float> eps = rng->randn(ggml_nelements(x));
-            float* vec_x = (float*)x->data;
+            auto eps = rng->randn(ggml_nelements(x));
             for (int j = 0; j < ggml_nelements(x); j++) {
-                vec_x[j] += eps[j] * s_noise * std::sqrt(sigma_hat * sigma_hat - sigmas[i] * sigmas[i]);
+                array_view(x)[j] += eps[j] * s_noise * std::sqrt(sigma_hat * sigma_hat - sigmas[i] * sigmas[i]);
             }
         }
-        ggml_tensor* denoised = model(x, sigma_hat, i + 1);
+        auto denoised = model(x, sigma_hat, i + 1);
         to_d(d, x, sigma_hat, denoised);
         // Euler method
         float dt = sigmas[i + 1] - sigma_hat;
-        do_euler_iteration(x, d, dt);
+        do_euler_iteration(x, x, d, dt);
     }
     return x;
 }
@@ -549,21 +547,66 @@ static struct ggml_tensor* sample_euler_ancestral(
     float s_noise = 1.f,
     std::function<std::vector<float>(float,float)> noise_sampler = NULL
 ) {
-    noise_sampler         = noise_sampler ? noise_sampler : default_noise_sampler(x);
-    struct ggml_tensor* d = ggml_dup_tensor(work_ctx, x);
+    noise_sampler = noise_sampler ? noise_sampler : default_noise_sampler(x);
+    auto d        = ggml_dup_tensor(work_ctx, x);
     for (int i = 0; i < sigmas.size() - 1; i++) {
         auto denoised = model(x, sigmas[i], i + 1);
         auto [sigma_down, sigma_up] = get_ancestral_step(sigmas[i], sigmas[i + 1], eta);
         to_d(d, x, sigmas[i], denoised);
         // Euler method
         float dt = sigma_down - sigmas[i];
-        do_euler_iteration(x, d, dt);
+        do_euler_iteration(x, x, d, dt);
         if (sigmas[i + 1] > 0) {
             auto noise   = noise_sampler(sigmas[i], sigmas[i + 1]);
-            float* vec_x = (float*)x->data;
             for (int j = 0; j < ggml_nelements(x); j++) {
-                vec_x[j] += noise[j] * s_noise * sigma_up;
+                array_view(x)[j] += noise[j] * s_noise * sigma_up;
             }
+        }
+    }
+    return x;
+}
+
+// Implements Algorithm 2 (Heun steps) from Karras et al. (2022).
+static struct ggml_tensor* sample_heun(
+    ggml_context* work_ctx,
+    denoise_cb_t model,
+    ggml_tensor* x,
+    std::vector<float> sigmas,
+    std::shared_ptr<RNG> rng,
+    float s_churn = 0.f,
+    float s_tmin = 0.f,
+    float s_tmax = std::numeric_limits<float>::infinity(),
+    float s_noise = 1.f
+) {
+    auto d   = ggml_dup_tensor(work_ctx, x);
+    auto d_2 = ggml_dup_tensor(work_ctx, x);
+    auto x_2 = ggml_dup_tensor(work_ctx, x);
+    for (int i = 0; i < sigmas.size() - 1; i++) {
+        float gamma = s_tmin <= sigmas[i] && sigmas[i] <= s_tmax
+            ? std::min<float>(s_churn / (sigmas.size() - 1), std::sqrt(2.f) - 1.f)
+            : 0.f;
+        float sigma_hat = sigmas[i] * (gamma + 1);
+        if (gamma > 0) {
+            auto eps = rng->randn(ggml_nelements(x));
+            for (int j = 0; j < ggml_nelements(x); j++) {
+                array_view(x)[j] += eps[j] * s_noise * std::sqrt(sigma_hat * sigma_hat - sigmas[i] * sigmas[i]);
+            }
+        }
+        auto denoised = model(x, sigma_hat, -(i + 1));
+        to_d(d, x, sigma_hat, denoised);
+        float dt = sigmas[i + 1] - sigma_hat;
+        if (sigmas[i + 1] == 0) {
+            // Euler method.
+            do_euler_iteration(x, x, d, dt);
+        } else {
+            // Heun's method
+            do_euler_iteration(x_2, x, d, dt);
+            auto denoised_2 = model(x_2, sigmas[i + 1], i + 1);
+            to_d(d_2, x_2, sigmas[i + 1], denoised_2);
+            for (int j = 0; j < ggml_nelements(d); j++) {
+                array_view(d)[j] = (array_view(d)[j] + array_view(d_2)[j]) * .5f;
+            }
+            do_euler_iteration(x, x, d, dt);
         }
     }
     return x;
@@ -585,57 +628,8 @@ static void sample_k_diffusion(sample_method_t method,
 
     switch (method) {
         case EULER: sample_euler(work_ctx, model, x, sigmas, rng); break;
-        case EULER_A: sample_euler_ancestral(work_ctx, model, x, sigmas, eta, 1.f, noise_sampler); break;
-        case HEUN: {
-            struct ggml_tensor* d  = ggml_dup_tensor(work_ctx, x);
-            struct ggml_tensor* x2 = ggml_dup_tensor(work_ctx, x);
-
-            for (int i = 0; i < steps; i++) {
-                // denoise
-                ggml_tensor* denoised = model(x, sigmas[i], -(i + 1));
-
-                // d = (x - denoised) / sigma
-                {
-                    float* vec_d        = (float*)d->data;
-                    float* vec_x        = (float*)x->data;
-                    float* vec_denoised = (float*)denoised->data;
-
-                    for (int j = 0; j < ggml_nelements(x); j++) {
-                        vec_d[j] = (vec_x[j] - vec_denoised[j]) / sigmas[i];
-                    }
-                }
-
-                float dt = sigmas[i + 1] - sigmas[i];
-                if (sigmas[i + 1] == 0) {
-                    // Euler step
-                    // x = x + d * dt
-                    float* vec_d = (float*)d->data;
-                    float* vec_x = (float*)x->data;
-
-                    for (int j = 0; j < ggml_nelements(x); j++) {
-                        vec_x[j] = vec_x[j] + vec_d[j] * dt;
-                    }
-                } else {
-                    // Heun step
-                    float* vec_d  = (float*)d->data;
-                    float* vec_d2 = (float*)d->data;
-                    float* vec_x  = (float*)x->data;
-                    float* vec_x2 = (float*)x2->data;
-
-                    for (int j = 0; j < ggml_nelements(x); j++) {
-                        vec_x2[j] = vec_x[j] + vec_d[j] * dt;
-                    }
-
-                    ggml_tensor* denoised = model(x2, sigmas[i + 1], i + 1);
-                    float* vec_denoised   = (float*)denoised->data;
-                    for (int j = 0; j < ggml_nelements(x); j++) {
-                        float d2 = (vec_x2[j] - vec_denoised[j]) / sigmas[i + 1];
-                        vec_d[j] = (vec_d[j] + d2) / 2;
-                        vec_x[j] = vec_x[j] + vec_d[j] * dt;
-                    }
-                }
-            }
-        } break;
+        case EULER_A: sample_euler_ancestral(work_ctx, model, x, sigmas, eta == 0.f ? 1.f : eta, 1.f, noise_sampler); break;
+        case HEUN: sample_heun(work_ctx, model, x, sigmas, rng); break;
         case DPM2: {
             struct ggml_tensor* d  = ggml_dup_tensor(work_ctx, x);
             struct ggml_tensor* x2 = ggml_dup_tensor(work_ctx, x);
