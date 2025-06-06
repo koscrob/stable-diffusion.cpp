@@ -567,28 +567,29 @@ static struct ggml_tensor* sample_euler_ancestral(
     return x;
 }
 
-// Implements Algorithm 2 (Heun steps) from Karras et al. (2022).
+// Implements Algorithm 1 (Heun steps) from Karras et al. (2022).
 static struct ggml_tensor* sample_heun(
     ggml_context* work_ctx,
     denoise_cb_t model,
     ggml_tensor* x,
     std::vector<float> sigmas,
-    std::shared_ptr<RNG> rng,
+    std::function<std::vector<float>(float,float)> noise_sampler = NULL,
     float s_churn = 0.f,
     float s_tmin = 0.f,
     float s_tmax = std::numeric_limits<float>::infinity(),
     float s_noise = 1.f
 ) {
-    auto d   = ggml_dup_tensor(work_ctx, x);
-    auto d_2 = ggml_dup_tensor(work_ctx, x);
-    auto x_2 = ggml_dup_tensor(work_ctx, x);
+    noise_sampler = noise_sampler ? noise_sampler : default_noise_sampler(x);
+    auto d        = ggml_dup_tensor(work_ctx, x);
+    auto d_2      = ggml_dup_tensor(work_ctx, x);
+    auto x_2      = ggml_dup_tensor(work_ctx, x);
     for (int i = 0; i < sigmas.size() - 1; i++) {
         float gamma = s_tmin <= sigmas[i] && sigmas[i] <= s_tmax
-            ? std::min<float>(s_churn / (sigmas.size() - 1), std::sqrt(2.f) - 1.f)
+            ? std::min<float>(s_churn / (sigmas.size() - 1), std::sqrt(2) - 1)
             : 0.f;
         float sigma_hat = sigmas[i] * (gamma + 1);
-        if (gamma > 0) {
-            auto eps = rng->randn(ggml_nelements(x));
+        if (gamma > 0.f) {
+            auto eps = noise_sampler(sigmas[i], sigmas[i + 1]);
             for (int j = 0; j < ggml_nelements(x); j++) {
                 array_view(x)[j] += eps[j] * s_noise * std::sqrt(sigma_hat * sigma_hat - sigmas[i] * sigmas[i]);
             }
@@ -597,17 +598,17 @@ static struct ggml_tensor* sample_heun(
         to_d(d, x, sigma_hat, denoised);
         float dt = sigmas[i + 1] - sigma_hat;
         if (sigmas[i + 1] == 0) {
-            // Euler method.
+            // Euler method
             do_euler_step(x, x, d, dt);
         } else {
             // Heun's method
             do_euler_step(x_2, x, d, dt);
             auto denoised_2 = model(x_2, sigmas[i + 1], i + 1);
             to_d(d_2, x_2, sigmas[i + 1], denoised_2);
-            for (int j = 0; j < ggml_nelements(d); j++) {
-                array_view(d)[j] = (array_view(d)[j] + array_view(d_2)[j]) * .5f;
+            for (int j = 0; j < ggml_nelements(x); j++) {
+                float d_avg = (array_view(d)[j] + array_view(d_2)[j]) * .5f;
+                array_view(x)[j] += d_avg * dt;
             }
-            do_euler_step(x, x, d, dt);
         }
     }
     return x;
@@ -1156,7 +1157,7 @@ static void sample_k_diffusion(sample_method_t method,
     switch (method) {
         case EULER: sample_euler(work_ctx, model, x, sigmas, rng); break;
         case EULER_A: sample_euler_ancestral(work_ctx, model, x, sigmas, noise_sampler); break;
-        case HEUN: sample_heun(work_ctx, model, x, sigmas, rng); break;
+        case HEUN: sample_heun(work_ctx, model, x, sigmas, noise_sampler); break;
         case DPM2: sample_dpm_2(work_ctx, model, x, sigmas, rng); break;
         case DPM2_A: sample_dpm_2_ancestral(work_ctx, model, x, sigmas, noise_sampler); break;
         case LMS: sample_lms(work_ctx, model, x, sigmas); break;
