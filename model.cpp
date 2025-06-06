@@ -1802,17 +1802,22 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb, ggml_backend
 
             size_t nbytes_to_read = tensor_storage.nbytes_to_read();
 
+            if (dst_tensor->type == GGML_TYPE_F32 && (
+                    tensor_storage.type == GGML_TYPE_F16 || 
+                    (ggml_backend_buffer_is_host(dst_tensor->buffer) && tensor_storage.type == GGML_TYPE_BF16)
+                )
+            ) {
+                dst_tensor->type = tensor_storage.type;
+                // HACK: Recalculate nb values.
+                dst_tensor->nb[0] = ggml_type_size(dst_tensor->type);
+                dst_tensor->nb[1] = dst_tensor->nb[0]*(dst_tensor->ne[0]/ggml_blck_size(dst_tensor->type));
+                for (int i = 2; i < GGML_MAX_DIMS; i++) {
+                    dst_tensor->nb[i] = dst_tensor->nb[i - 1]*dst_tensor->ne[i - 1];
+                }
+            }
+
             if (dst_tensor->buffer == NULL || ggml_backend_buffer_is_host(dst_tensor->buffer)) {
                 // for the CPU and Metal backend, we can copy directly into the tensor
-                if (dst_tensor->type == GGML_TYPE_F32 && (tensor_storage.type == GGML_TYPE_F16 || tensor_storage.type == GGML_TYPE_BF16)) {
-                    dst_tensor->type = tensor_storage.type;
-                    // HACK: Recalculate nb values.
-                    dst_tensor->nb[0] = ggml_type_size(dst_tensor->type);
-                    dst_tensor->nb[1] = dst_tensor->nb[0]*(dst_tensor->ne[0]/ggml_blck_size(dst_tensor->type));
-                    for (int i = 2; i < GGML_MAX_DIMS; i++) {
-                        dst_tensor->nb[i] = dst_tensor->nb[i - 1]*dst_tensor->ne[i - 1];
-                    }
-                }
                 if (dst_tensor->type == GGML_TYPE_F16 && tensor_storage.type == GGML_TYPE_BF16) {
                     dst_tensor->type = tensor_storage.type;
                 }
