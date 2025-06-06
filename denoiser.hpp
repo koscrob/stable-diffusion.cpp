@@ -1226,7 +1226,7 @@ static void sample_k_diffusion(sample_method_t method,
         case DPM_FAST: sample_dpm_fast(work_ctx, model, x, sigmas[sigmas.size() - (sigmas.back() == 0.f ? 2 : 1)], sigmas[0], sigmas.size() - 1, noise_sampler); break;
         case DPM_ADAPTIVE: sample_dpm_adaptive(work_ctx, model, x, sigmas[sigmas.size() - (sigmas.back() == 0.f ? 2 : 1)], sigmas[0], noise_sampler); break;
         case DPMPP2S_A: sample_dpmpp_2s_ancestral(work_ctx, model, x, sigmas, noise_sampler); break;
-        case DPMPP_SDE: sample_dpmpp_sde(work_ctx, model, x, sigmas); break;
+        case DPMPP_SDE: sample_dpmpp_sde(work_ctx, model, x, sigmas, noise_sampler); break;
         case DPMPP2M:  // DPM++ (2M) from Karras et al (2022)
         {
             struct ggml_tensor* old_denoised = ggml_dup_tensor(work_ctx, x);
