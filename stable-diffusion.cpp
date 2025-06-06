@@ -46,6 +46,7 @@ const char* sampling_methods_str[] = {
     "DPM Fast",
     "DPM Adaptive",
     "DPM++ (2s) A",
+    "DPM++ SDE",
     "DPM++ (2M)",
     "modified DPM++ (2M)",
     "iPNDM",

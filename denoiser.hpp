@@ -1140,6 +1140,68 @@ static struct ggml_tensor* sample_dpmpp_2s_ancestral(
     return x;
 }
 
+// DPM-Solver++ (stochastic).
+static struct ggml_tensor* sample_dpmpp_sde(
+    ggml_context* work_ctx,
+    denoise_cb_t model,
+    ggml_tensor* x,
+    std::vector<float> sigmas,
+    std::function<std::vector<float>(float, float)> noise_sampler = NULL,
+    float eta = 1.f,
+    float s_noise = 1.f,
+    float r = .5f
+) {
+    float sigma_min = std::numeric_limits<float>::max();
+    for (float sigma : sigmas) {
+        if (sigma > 0) {
+            sigma_min = std::min<float>(sigma_min, sigma);
+        }
+    }
+    float sigma_max = sigma_max = *std::max_element(sigmas.begin(), sigmas.end());
+    // TODO: Implement BrownianTreeNoiseSampler
+    // noise_sampler = BrownianTreeNoiseSampler(x, sigma_min, sigma_max) if noise_sampler is None else noise_sampler
+    noise_sampler = noise_sampler ? noise_sampler : default_noise_sampler(x);
+    auto sigma_fn = [](float t) { return exp(-t); };
+    auto t_fn     = [](float sigma) { return -log(sigma); };
+    auto d        = ggml_dup_tensor(work_ctx, x);
+    auto x_2      = ggml_dup_tensor(work_ctx, x);
+    for (int i = 0; i < sigmas.size() - 1; i++) {
+        auto denoised = model(x, sigmas[i], i + 1);
+        if (sigmas[i + 1] == 0.f) {
+            // Euler method
+            to_d(d, x, sigmas[i], denoised);
+            float dt = sigmas[i + 1] - sigmas[i];
+            do_euler_step(x, x, d, dt);
+        } else {
+            // DPM-Solver++
+            float t      = t_fn(sigmas[i]);
+            float t_next = t_fn(sigmas[i + 1]);
+            float h      = t_next - t;
+            float s      = t + h * r;
+            float fac    = 1.f / (2.f * r);
+            // Step 1
+            auto [sd, su] = get_ancestral_step(sigma_fn(t), sigma_fn(s), eta);
+            float s_      = t_fn(sd);
+            float s_t     = sigma_fn(s_) / sigma_fn(t);
+            auto noise    = noise_sampler(sigma_fn(t), sigma_fn(s));
+            for (size_t j = 0; j < ggml_nelements(x); j++) {
+                array_view(x_2)[j] = s_t * array_view(x)[j] - expm1(t - s_) * array_view(denoised)[j] + noise[j] * s_noise * su;
+            }
+            auto denoised_2 = model(x_2, sigma_fn(s), i + 1);
+            // Step 2
+            std::tie(sd, su) = get_ancestral_step(sigma_fn(t), sigma_fn(t_next), eta);
+            float t_next_    = t_fn(sd);
+            s_t              = sigma_fn(t_next_) / sigma_fn(t);
+            noise            = noise_sampler(sigma_fn(t), sigma_fn(s));
+            for (size_t j    = 0; j < ggml_nelements(x); j++) {
+                float denoised_d = (1 - fac) * array_view(denoised)[j] + fac * array_view(denoised_2)[j];
+                array_view(x)[j] = s_t * array_view(x)[j] - expm1(t - t_next_) * denoised_d + noise[j] * s_noise * su;
+            }
+        }
+    }
+    return x;
+}
+
 // k diffusion reverse ODE: dx = (x - D(x;\sigma)) / \sigma dt; \sigma(t) = t
 static void sample_k_diffusion(sample_method_t method,
                                denoise_cb_t model,
@@ -1164,6 +1226,7 @@ static void sample_k_diffusion(sample_method_t method,
         case DPM_FAST: sample_dpm_fast(work_ctx, model, x, sigmas[sigmas.size() - (sigmas.back() == 0.f ? 2 : 1)], sigmas[0], sigmas.size() - 1, noise_sampler); break;
         case DPM_ADAPTIVE: sample_dpm_adaptive(work_ctx, model, x, sigmas[sigmas.size() - (sigmas.back() == 0.f ? 2 : 1)], sigmas[0], noise_sampler); break;
         case DPMPP2S_A: sample_dpmpp_2s_ancestral(work_ctx, model, x, sigmas, noise_sampler); break;
+        case DPMPP_SDE: sample_dpmpp_sde(work_ctx, model, x, sigmas); break;
         case DPMPP2M:  // DPM++ (2M) from Karras et al (2022)
         {
             struct ggml_tensor* old_denoised = ggml_dup_tensor(work_ctx, x);
