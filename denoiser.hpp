@@ -3,6 +3,7 @@
 
 #include "ggml_extend.hpp"
 #include "gits_noise.inl"
+#include <deque>
 
 /*================================================= CompVisDenoiser ==================================================*/
 
@@ -698,6 +699,78 @@ static struct ggml_tensor* sample_dpm_2_ancestral(
     return x;
 }
 
+float integrate_quad(const std::function<float(float)>& f, float a, float b, float tol, int max_depth = 20) {
+    auto simpsons_rule = [](const std::function<float(float)>& f, float a, float b) {
+        float mid = (a + b) * .5f;
+        return (b - a) / 6.f * (f(a) + 4.f * f(mid) + f(b));
+    };
+    float mid = (a + b) * .5f;
+    float whole = simpsons_rule(f, a, b);
+    float left = simpsons_rule(f, a, mid);
+    float right = simpsons_rule(f, mid, b);
+    float error = std::fabs(left + right - whole);
+    if (error < 15.f * tol || max_depth <= 0) {
+        return left + right + (left + right - whole) / 15.f;
+    }
+    return integrate_quad(f, a, mid, tol * .5f, max_depth - 1) +
+           integrate_quad(f, mid, b, tol * .5f, max_depth - 1);
+}
+
+float linear_multistep_coeff(int order, std::vector<float> t, int i, int j) {
+    GGML_ASSERT(order - 1 <= i);
+    auto fn = [order,t, i, j](float tau) {
+        float prod = 1.f;
+        for (int k = 0; k < order; k++) {
+            if (j == k) {
+                continue;
+            }
+            prod *= (tau - t[i - k]) / (t[i - j] - t[i - k]);
+        }
+        return prod;
+    };
+    return integrate_quad(fn, t[i], t[i + 1], 1e-4);
+}
+
+static struct ggml_tensor* sample_lms(
+    ggml_context* work_ctx,
+    denoise_cb_t model,
+    ggml_tensor* x,
+    std::vector<float> sigmas,
+    int order = 4
+) {
+    ggml_init_params params = {0};
+    params.mem_size = (ggml_nbytes(x) + ggml_tensor_overhead()) * sigmas.size();
+    params.mem_buffer = NULL;
+    params.no_alloc   = false;
+    ggml_context* temp_ctx  = ggml_init(params);
+    GGML_ASSERT(temp_ctx != NULL);
+    std::deque<ggml_tensor*> ds;
+    for (int i = 0; i < sigmas.size() - 1; i++) {
+        auto denoised = model(x, sigmas[i], i + 1);
+        auto d = ggml_dup_tensor(temp_ctx, x);
+        to_d(d, x, sigmas[i], denoised);
+        ds.push_back(d);
+        if (ds.size() > order) {
+            ds.pop_front();
+        }
+        int cur_order = std::min<int>(i + 1, order);
+        std::vector<float> coeffs;
+        coeffs.reserve(cur_order);
+        for (int j = 0; j < cur_order; j++) {
+            coeffs[j] = linear_multistep_coeff(cur_order, sigmas, i, j);
+        }
+        for (int j = 0; j < ggml_nelements(x); j++) {
+            float sum = 0;
+            for (int k = 0; k < cur_order; k++) {
+                sum += coeffs[k] * array_view(ds[cur_order - 1 - k])[j];
+            }
+            array_view(x)[j] += sum;
+        }
+    }
+    ggml_free(temp_ctx);
+    return x;
+}
+
 // k diffusion reverse ODE: dx = (x - D(x;\sigma)) / \sigma dt; \sigma(t) = t
 static void sample_k_diffusion(sample_method_t method,
                                denoise_cb_t model,
@@ -718,6 +791,7 @@ static void sample_k_diffusion(sample_method_t method,
         case HEUN: sample_heun(work_ctx, model, x, sigmas, rng); break;
         case DPM2: sample_dpm_2(work_ctx, model, x, sigmas, rng); break;
         case DPM2_A: sample_dpm_2_ancestral(work_ctx, model, x, sigmas, noise_sampler); break;
+        case LMS: sample_lms(work_ctx, model, x, sigmas); break;
         case DPMPP2S_A: {
             struct ggml_tensor* noise = ggml_dup_tensor(work_ctx, x);
             struct ggml_tensor* d     = ggml_dup_tensor(work_ctx, x);

@@ -34,6 +34,7 @@ const char* sample_method_str[] = {
     "heun",
     "dpm2",
     "dpm2_a",
+    "lms",
     "dpm++2s_a",
     "dpm++2m",
     "dpm++2mv2",

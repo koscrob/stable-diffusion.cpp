@@ -37,10 +37,12 @@ const char* model_version_to_str[] = {
     "Flux Fill"};
 
 const char* sampling_methods_str[] = {
-    "Euler A",
     "Euler",
+    "Euler A",
     "Heun",
     "DPM2",
+    "DPM2 A",
+    "LMS",
     "DPM++ (2s)",
     "DPM++ (2M)",
     "modified DPM++ (2M)",

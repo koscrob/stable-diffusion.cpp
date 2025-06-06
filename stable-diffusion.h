@@ -39,6 +39,7 @@ enum sample_method_t {
     HEUN,
     DPM2,
     DPM2_A,
+    LMS,
     DPMPP2S_A,
     DPMPP2M,
     DPMPP2Mv2,
