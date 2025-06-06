@@ -780,7 +780,7 @@ struct PIDStepSizeController {
     float accept_safety;
     float eps;
     std::vector<float> errs;
-    PIDStepSizeController(float h, float pcoeff, float icoeff, float dcoeff, int order = 1, float accept_safety = 0.81f, float eps = 1e-8f)
+    PIDStepSizeController(float h, float pcoeff, float icoeff, float dcoeff, float order = 1.f, float accept_safety = 0.81f, float eps = 1e-8f)
         : h(h), 
           b1(pcoeff + icoeff + dcoeff),
           b2(-(pcoeff + 2 * dcoeff) / order),
@@ -820,6 +820,21 @@ static inline std::vector<float> linspace(float start, float end, int steps) {
     return result;
 }
 
+static float vector_norm(const std::vector<float>& vec, float p = 2.0) {
+    assert(!vec.empty());
+    if (p == 0) {
+        return std::count_if(vec.begin(), vec.end(), [](float v) { return v != 0; });
+    } else if (p == std::numeric_limits<float>::infinity()) {
+        return *std::max_element(vec.begin(), vec.end(), [](float a, float b) { return std::abs(a) < std::abs(b); });
+    } else {
+        float sum = 0.0;
+        for (float v : vec) {
+            sum += std::pow(std::abs(v), p);
+        }
+        return std::pow(sum, 1.0 / p);
+    }
+}
+
 // DPM-Solver. See https://arxiv.org/abs/2206.00927.
 struct DPMSolver {
     ggml_context* work_ctx;
@@ -844,7 +859,7 @@ struct DPMSolver {
     }
     ggml_tensor* dpm_solver_1_step(ggml_tensor* x, float t, float t_next, int cur_step = -1) {
         float h = t_next - t;
-        auto eps = calc_eps(x, t, cur_step + 1);
+        auto eps = calc_eps(x, t, cur_step);
         auto x_1 = ggml_dup_tensor(work_ctx, x);
         float sigma = to_sigma(t_next);
         for (size_t i = 0; i < ggml_nelements(x); i++) {
@@ -854,14 +869,14 @@ struct DPMSolver {
     }
     ggml_tensor* dpm_solver_2_step(ggml_tensor* x, float t, float t_next, int cur_step = -1, float r1 = .5f) {
         float h  = t_next - t;
-        auto eps = calc_eps(x, t, cur_step + 1);
+        auto eps = calc_eps(x, t, cur_step);
         float s1 = t + r1 * h;
         auto u1  = ggml_dup_tensor(work_ctx, x);
         float sigma = to_sigma(s1);
         for (size_t i = 0; i < ggml_nelements(x); i++) {
             array_view(u1)[i] = array_view(x)[i] - sigma * expm1(r1 * h) * array_view(eps)[i];
         }
-        auto eps_r1 = calc_eps(u1, s1, cur_step + 2);
+        auto eps_r1 = calc_eps(u1, s1, cur_step);
         auto x_2    = ggml_dup_tensor(work_ctx, x);
         sigma       = to_sigma(t_next);
         for (size_t i = 0; i < ggml_nelements(x); i++) {
@@ -872,7 +887,7 @@ struct DPMSolver {
     }
     ggml_tensor* dpm_solver_3_step(ggml_tensor* x, float t, float t_next, int cur_step = -1, float r1 = 1.f / 3.f, float r2 = 2.f / 3.f) {
         float h = t_next - t;
-        auto eps = calc_eps(x, t, cur_step + 1);
+        auto eps = calc_eps(x, t, cur_step);
         float s1 = t + r1 * h;
         float s2 = t + r2 * h;
         auto u1  = ggml_dup_tensor(work_ctx, x);
@@ -880,14 +895,14 @@ struct DPMSolver {
         for (size_t i = 0; i < ggml_nelements(x); i++) {
             array_view(u1)[i] = array_view(x)[i] - sigma * expm1(r1 * h) * array_view(eps)[i];
         }
-        auto eps_r1 = calc_eps(u1, s1, cur_step + 2);
+        auto eps_r1 = calc_eps(u1, s1, cur_step);
         auto u2     = ggml_dup_tensor(work_ctx, x);
         sigma       = to_sigma(s2);
         for (size_t i = 0; i < ggml_nelements(x); i++) {
             array_view(u2)[i] = array_view(x)[i] - sigma * expm1(r2 * h) * array_view(eps)[i] -
                 sigma * (r2 / r1) * (expm1(r2 * h) / (r2 * h) - 1) * (array_view(eps_r1)[i] - array_view(eps)[i]);
         }
-        auto eps_r2 = calc_eps(u2, s2, cur_step + 3);
+        auto eps_r2 = calc_eps(u2, s2, cur_step);
         auto x_3    = ggml_dup_tensor(work_ctx, x);
         sigma       = to_sigma(t_next);
         for (size_t i = 0; i < ggml_nelements(x); i++) {
@@ -897,19 +912,19 @@ struct DPMSolver {
         return x_3;
     }
     ggml_tensor* dpm_solver_fast(
-        ggml_tensor* x, 
-        float t_start, 
-        float t_end, 
+        ggml_tensor* x,
+        float t_start,
+        float t_end,
         int nfe,
-        float eta = 0.f, 
+        float eta = 0.f,
         float s_noise = 1.f,
         std::function<std::vector<float>(float, float)> noise_sampler = NULL
     ) {
-        noise_sampler = noise_sampler ? noise_sampler : default_noise_sampler(x);
         if (t_start <= t_end && eta != 0.f) {
             LOG_ERROR("eta must be 0 for reverse sampling");
             return NULL;
         }
+        noise_sampler = noise_sampler ? noise_sampler : default_noise_sampler(x);
         float m = floor(nfe / 3.f) + 1;
         std::vector<float> ts = linspace(t_start, t_end, m + 1);
         std::vector<int> orders (m, 3);
@@ -947,6 +962,77 @@ struct DPMSolver {
         }
         return x;
     }
+    ggml_tensor* dpm_solver_adaptive(
+        ggml_tensor* x,
+        float t_start,
+        float t_end,
+        int order = 3,
+        float rtol = 0.05f,
+        float atol = 0.0078f,
+        float h_init = 0.05f,
+        float pcoeff = 0.f,
+        float icoeff = 1.f,
+        float dcoeff = 0.f,
+        float accept_safety = 0.81f,
+        float eta = 0.f,
+        float s_noise = 1.f,
+        std::function<std::vector<float>(float, float)> noise_sampler = NULL
+    ) {
+        if (order != 2 && order != 3) {
+            LOG_ERROR("order should be 2 or 3");
+            return NULL;
+        }
+        bool forward = t_end > t_start;
+        if (!forward && eta != 0.f) {
+            LOG_ERROR("eta must be 0 for reverse sampling");
+            return NULL;
+        }
+        noise_sampler = noise_sampler ? noise_sampler : default_noise_sampler(x);
+        h_init        = abs(h_init) * (forward ? 1 : - 1);
+        float s       = t_start;
+        ggml_tensor* x_prev = x;
+        PIDStepSizeController pid(h_init, pcoeff, icoeff, dcoeff, eta == 0.f ? order : 1.5f, accept_safety);
+        int cur_step = 0;
+        auto x_low   = ggml_dup_tensor(work_ctx, x);
+        auto x_high  = ggml_dup_tensor(work_ctx, x);
+        while (forward ? s < t_end - 1e-5f : s > t_end + 1e-5f) {
+            cur_step++;
+            float t = forward ? std::min<float>(t_end, s + pid.h) : std::max<float>(t_end, s + pid.h);
+            float t_, sd, su;
+            if (eta != 0.f) {
+                std::tie(sd, su) = get_ancestral_step(to_sigma(s), to_sigma(t), eta);
+                t_               = std::min<float>(t_end, to_t(sd));
+                su               = std::sqrt(to_sigma(t) * to_sigma(t) - to_sigma(t_) * to_sigma(t_));
+            } else {
+                t_ = t;
+                su = 0.f;
+            }
+            auto eps = calc_eps(x, s, cur_step);
+            if (order == 2) {
+                x_low  = dpm_solver_1_step(x, s, t_, cur_step);
+                x_high = dpm_solver_2_step(x, s, t_, cur_step);
+            } else {
+                x_low = dpm_solver_2_step(x, s, t_, cur_step, 1.f / 3.f);
+                x_high = dpm_solver_3_step(x, s, t_, cur_step);
+            }
+            std::vector<float> delta;
+            delta.reserve(ggml_nelements(x));
+            for (size_t i = 0; i < ggml_nelements(x); i++) {
+                float d_ = std::max<float>(atol, rtol * std::max<float>(abs(array_view(x_low)[i]), abs(array_view(x_prev)[i])));
+                delta.push_back((array_view(x_low)[i] - array_view(x_high)[i]) / d_);
+            }
+            float error = vector_norm(delta) / std::sqrt(ggml_nelements(x));
+            if (pid.propose_step(error)) {
+                x_prev = x_low;
+                auto noise = noise_sampler(to_sigma(s), to_sigma(t));
+                for (size_t i = 0; i < ggml_nelements(x); i++) {
+                    array_view(x)[i] = array_view(x_high)[i] + su * s_noise * noise[i];
+                }
+                s = t;
+            }
+        }
+        return x;
+    }
 };
 
 // DPM-Solver-Fast (fixed step size). See https://arxiv.org/abs/2206.00927.
@@ -957,13 +1043,45 @@ static struct ggml_tensor* sample_dpm_fast(
     float sigma_min,
     float sigma_max,
     int n,
-    float eta= 0.f,
-    float s_noise=1.f,
-    std::function<std::vector<float>(float, float)> noise_sampler = NULL
+    std::function<std::vector<float>(float, float)> noise_sampler = NULL,
+    float eta = 0.f,
+    float s_noise = 1.f
 ) {
     assert(sigma_min > 0 && sigma_max > 0);
     DPMSolver dpm_solver (work_ctx, model);
     auto result = dpm_solver.dpm_solver_fast(x, dpm_solver.to_t(sigma_max), dpm_solver.to_t(sigma_min), n, eta, s_noise, noise_sampler);
+    for (size_t i = 0; i < ggml_nelements(x); i++) {
+        array_view(x)[i] = array_view(result)[i];
+    }
+    return x;
+}
+
+// DPM-Solver-12 and 23 (adaptive step size). See https://arxiv.org/abs/2206.00927.
+static struct ggml_tensor* sample_dpm_adaptive(
+    ggml_context* work_ctx,
+    denoise_cb_t model,
+    ggml_tensor* x,
+    float sigma_min,
+    float sigma_max,
+    std::function<std::vector<float>(float, float)> noise_sampler = NULL,
+    float eta = 0.,
+    float s_noise = 1.f,
+    int order = 3,
+    float rtol = 0.05f,
+    float atol = 0.0078f,
+    float h_init = 0.05f,
+    float pcoeff = 0.f,
+    float icoeff = 1.f,
+    float dcoeff = 0.f,
+    float accept_safety = 0.81
+) {
+    assert(sigma_min > 0 && sigma_max > 0);
+    DPMSolver dpm_solver(work_ctx, model);
+    auto result = dpm_solver.dpm_solver_adaptive(
+        x, dpm_solver.to_t(sigma_max), dpm_solver.to_t(sigma_min),
+        order, rtol, atol, h_init, pcoeff, icoeff, dcoeff,
+        accept_safety, eta, s_noise, noise_sampler
+    );
     for (size_t i = 0; i < ggml_nelements(x); i++) {
         array_view(x)[i] = array_view(result)[i];
     }
@@ -991,7 +1109,8 @@ static void sample_k_diffusion(sample_method_t method,
         case DPM2: sample_dpm_2(work_ctx, model, x, sigmas, rng); break;
         case DPM2_A: sample_dpm_2_ancestral(work_ctx, model, x, sigmas, noise_sampler); break;
         case LMS: sample_lms(work_ctx, model, x, sigmas); break;
-        case DPM_FAST: sample_dpm_fast(work_ctx, model, x, sigmas[sigmas.size() - (sigmas.back() == 0.f ? 2 : 1)], sigmas[0], sigmas.size() - 1, eta, 1.f, noise_sampler); break;
+        case DPM_FAST: sample_dpm_fast(work_ctx, model, x, sigmas[sigmas.size() - (sigmas.back() == 0.f ? 2 : 1)], sigmas[0], sigmas.size() - 1, noise_sampler); break;
+        case DPM_ADAPTIVE: sample_dpm_adaptive(work_ctx, model, x, sigmas[sigmas.size() - (sigmas.back() == 0.f ? 2 : 1)], sigmas[0], noise_sampler); break;
         case DPMPP2S_A: {
             struct ggml_tensor* noise = ggml_dup_tensor(work_ctx, x);
             struct ggml_tensor* d     = ggml_dup_tensor(work_ctx, x);

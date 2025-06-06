@@ -36,6 +36,7 @@ const char* sample_method_str[] = {
     "dpm2_a",
     "lms",
     "dpm_fast",
+    "dpm_adaptive",
     "dpm++2s_a",
     "dpm++2m",
     "dpm++2mv2",

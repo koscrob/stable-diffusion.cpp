@@ -41,6 +41,7 @@ enum sample_method_t {
     DPM2_A,
     LMS,
     DPM_FAST,
+    DPM_ADAPTIVE,
     DPMPP2S_A,
     DPMPP2M,
     DPMPP2Mv2,
