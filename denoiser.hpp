@@ -755,10 +755,9 @@ static struct ggml_tensor* sample_lms(
             ds.pop_front();
         }
         int cur_order = std::min<int>(i + 1, order);
-        std::vector<float> coeffs;
-        coeffs.reserve(cur_order);
+        std::vector<float> coeffs(cur_order);
         for (int j = 0; j < cur_order; j++) {
-            coeffs.push_back(linear_multistep_coeff(cur_order, sigmas, i, j));
+            coeffs[j] = linear_multistep_coeff(cur_order, sigmas, i, j);
         }
         for (int j = 0; j < ggml_nelements(x); j++) {
             float sum = 0;
@@ -809,17 +808,6 @@ struct PIDStepSizeController {
         return accept;
     }
 };
-
-static inline std::vector<float> linspace(float start, float end, int steps) {
-    assert(steps > 0);
-    std::vector<float> result;
-    result.reserve(steps);
-    float step_size = (end - start) / (steps - 1);
-    for (int i = 0; i < steps; i++) {
-        result.push_back(start + i * step_size);
-    }
-    return result;
-}
 
 static float vector_norm(const std::vector<float>& vec, float p = 2.0) {
     assert(!vec.empty());
@@ -927,7 +915,7 @@ struct DPMSolver {
         }
         noise_sampler = noise_sampler ? noise_sampler : default_noise_sampler(x);
         float m = floor(nfe / 3.f) + 1;
-        std::vector<float> ts = linspace(t_start, t_end, m + 1);
+        std::vector<float> ts = linear_space(t_start, t_end, m + 1);
         std::vector<int> orders (m, 3);
         if (nfe % 3 == 0) {
             orders[m - 2] = 2;
@@ -1016,11 +1004,10 @@ struct DPMSolver {
                 x_low = dpm_solver_2_step(x, s, t_, cur_step, 1.f / 3.f);
                 x_high = dpm_solver_3_step(x, s, t_, cur_step);
             }
-            std::vector<float> delta;
-            delta.reserve(ggml_nelements(x));
+            std::vector<float> delta(ggml_nelements(x));
             for (size_t i = 0; i < ggml_nelements(x); i++) {
                 float d_ = std::max<float>(atol, rtol * std::max<float>(abs(array_view(x_low)[i]), abs(array_view(x_prev)[i])));
-                delta.push_back((array_view(x_low)[i] - array_view(x_high)[i]) / d_);
+                delta[i] = (array_view(x_low)[i] - array_view(x_high)[i]) / d_;
             }
             float error = vector_norm(delta) / std::sqrt(ggml_nelements(x));
             if (pid.propose_step(error)) {
