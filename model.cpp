@@ -1802,9 +1802,9 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb, ggml_backend
 
             size_t nbytes_to_read = tensor_storage.nbytes_to_read();
 
-            if (dst_tensor->type == GGML_TYPE_F32 && (
+            if (dst_tensor->type == GGML_TYPE_F32 && tensor_storage.type != GGML_TYPE_F32 && (
                     tensor_storage.type == GGML_TYPE_F16 || 
-                    (ggml_backend_buffer_is_host(dst_tensor->buffer) && tensor_storage.type == GGML_TYPE_BF16)
+                    ((dst_tensor->buffer == NULL || ggml_backend_buffer_is_host(dst_tensor->buffer)) && tensor_storage.type == GGML_TYPE_BF16)
                 )
             ) {
                 dst_tensor->type = tensor_storage.type;
