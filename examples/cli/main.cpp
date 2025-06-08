@@ -28,7 +28,7 @@ const char* rng_type_to_str[] = {
 };
 
 // Names of the sampler method, same order as enum sample_method in stable-diffusion.h
-const char* sample_method_str[] = {
+const std::vector<std::string> sample_method_names = {
     "euler",
     "euler_a",
     "heun",
@@ -37,10 +37,10 @@ const char* sample_method_str[] = {
     "lms",
     "dpm_fast",
     "dpm_adaptive",
-    "dpm++2s_a",
-    "dpm++_sde",
-    "dpm++2m",
-    "dpm++2mv2",
+    "dpmpp2s_a",
+    "dpmpp_sde",
+    "dpmpp2m",
+    "dpmpp2mv2",
     "ipndm",
     "ipndm_v",
     "lcm",
@@ -176,7 +176,7 @@ void print_params(SDParams params) {
     printf("    clip_skip:         %d\n", params.clip_skip);
     printf("    width:             %d\n", params.width);
     printf("    height:            %d\n", params.height);
-    printf("    sample_method:     %s\n", sample_method_str[params.sample_method]);
+    printf("    sample_method:     %s\n", sample_method_names[params.sample_method].c_str());
     printf("    schedule:          %s\n", schedule_str[params.schedule]);
     printf("    sample_steps:      %d\n", params.sample_steps);
     printf("    strength(img2img): %.2f\n", params.strength);
@@ -185,6 +185,14 @@ void print_params(SDParams params) {
     printf("    batch_count:       %d\n", params.batch_count);
     printf("    vae_tiling:        %s\n", params.vae_tiling ? "true" : "false");
     printf("    upscale_repeats:   %d\n", params.upscale_repeats);
+}
+
+static std::string join(const std::vector<std::string>& v, const std::string separator) {
+    std::string result;
+    for (std::vector<std::string>::const_iterator it = v.begin(); it != v.end(); it++) {
+        result += it != v.end() - 1 ? *it + separator : *it;
+    }
+    return result;
 }
 
 void print_usage(int argc, const char* argv[]) {
@@ -233,7 +241,7 @@ void print_usage(int argc, const char* argv[]) {
     printf("                                     1.0 corresponds to full destruction of information in init image\n");
     printf("  -H, --height H                     image height, in pixel space (default: 512)\n");
     printf("  -W, --width W                      image width, in pixel space (default: 512)\n");
-    printf("  --sampling-method {euler, euler_a, heun, dpm2, dpm++2s_a, dpm++2m, dpm++2mv2, ipndm, ipndm_v, lcm, ddim_trailing, tcd}\n");
+    printf("  --sampling-method {%s}\n", join(sample_method_names, ", ").c_str());
     printf("                                     sampling method (default: \"euler_a\")\n");
     printf("  --steps  STEPS                     number of sample steps (default: 20)\n");
     printf("  --rng {std_default, cuda}          RNG (default: cuda)\n");
@@ -562,18 +570,16 @@ void parse_args(int argc, const char** argv, SDParams& params) {
                 invalid_arg = true;
                 break;
             }
-            const char* sample_method_selected = argv[i];
-            int sample_method_found            = -1;
-            for (int m = 0; m < N_SAMPLE_METHODS; m++) {
-                if (!strcmp(sample_method_selected, sample_method_str[m])) {
-                    sample_method_found = m;
-                }
-            }
-            if (sample_method_found == -1) {
+            std::string sample_method_selected(argv[i]);
+            // Convert "dpm++2s_a" to "dpmpp2s_a" and so on with all similar legacy sampler names.
+            std::replace(sample_method_selected.begin(), sample_method_selected.end(), '+', 'p');
+            auto it = std::find(sample_method_names.cbegin(), sample_method_names.cend(), sample_method_selected);
+            if (it == sample_method_names.cend()) {
                 invalid_arg = true;
                 break;
             }
-            params.sample_method = (sample_method_t)sample_method_found;
+            auto sample_method_idx = std::distance(sample_method_names.cbegin(), it);
+            params.sample_method = (sample_method_t)sample_method_idx;
         } else if (arg == "-h" || arg == "--help") {
             print_usage(argc, argv);
             exit(0);
@@ -743,7 +749,7 @@ std::string get_image_params(SDParams params, int64_t seed) {
     parameter_string += "Size: " + std::to_string(params.width) + "x" + std::to_string(params.height) + ", ";
     parameter_string += "Model: " + sd_basename(params.model_path) + ", ";
     parameter_string += "RNG: " + std::string(rng_type_to_str[params.rng_type]) + ", ";
-    parameter_string += "Sampler: " + std::string(sample_method_str[params.sample_method]);
+    parameter_string += "Sampler: " + sample_method_names[params.sample_method];
     if (params.schedule == KARRAS) {
         parameter_string += " karras";
     }
