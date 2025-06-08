@@ -519,11 +519,17 @@ static struct ggml_tensor* sample_euler(
 ) {
     auto d = ggml_dup_tensor(work_ctx, x);
     for (int i = 0; i < sigmas.size() - 1; i++) {
-        float gamma = s_tmin <= sigmas[i] && sigmas[i] <= s_tmax
-            ? std::min<float>(s_churn / (sigmas.size() - 1), std::sqrt(2.f) - 1.f)
-            : 0.f;
-        float sigma_hat = sigmas[i] * (gamma + 1);
-        if (gamma > 0) {
+        float gamma, sigma_hat;
+        if (s_churn > 0) {
+            gamma = s_tmin <= sigmas[i] && sigmas[i] <= s_tmax
+                ? std::min<float>(s_churn / (sigmas.size() - 1), std::sqrt(2.f) - 1.f)
+                : 0.f;
+            sigma_hat = sigmas[i] * (gamma + 1);
+        } else {
+            gamma = 0;
+            sigma_hat = sigmas[i];
+        }
+        if (gamma > 0 && s_noise != 0.f) {
             auto eps = rng->randn(ggml_nelements(x));
             for (int j = 0; j < ggml_nelements(x); j++) {
                 array_view(x)[j] += eps[j] * s_noise * std::sqrt(sigma_hat * sigma_hat - sigmas[i] * sigmas[i]);
