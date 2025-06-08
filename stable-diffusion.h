@@ -154,6 +154,7 @@ SD_API sd_ctx_t* new_sd_ctx(const char* model_path,
                             enum schedule_t s,
                             bool keep_clip_on_cpu,
                             bool keep_control_net_cpu,
+                            bool keep_unet_on_cpu,
                             bool keep_vae_on_cpu,
                             bool diffusion_flash_attn);
 

@@ -1802,6 +1802,7 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb, ggml_backend
 
             size_t nbytes_to_read = tensor_storage.nbytes_to_read();
 
+            // HACK: Do not upconvert to float32 from float16 or bf16.
             if (dst_tensor->type == GGML_TYPE_F32 && tensor_storage.type != GGML_TYPE_F32 && (
                     tensor_storage.type == GGML_TYPE_F16 || 
                     ((dst_tensor->buffer == NULL || ggml_backend_buffer_is_host(dst_tensor->buffer)) && tensor_storage.type == GGML_TYPE_BF16)
@@ -1814,6 +1815,11 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb, ggml_backend
                 for (int i = 2; i < GGML_MAX_DIMS; i++) {
                     dst_tensor->nb[i] = dst_tensor->nb[i - 1]*dst_tensor->ne[i - 1];
                 }
+            }
+
+            // TODO: Only convert float16 to bf16 if the CPU does not support half->float conversion.
+            if (dst_tensor->buffer == NULL && tensor_storage.type == GGML_TYPE_F16) {
+                dst_tensor->type = GGML_TYPE_BF16;
             }
 
             if (dst_tensor->buffer == NULL || ggml_backend_buffer_is_host(dst_tensor->buffer)) {

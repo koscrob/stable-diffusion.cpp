@@ -80,6 +80,7 @@ public:
     ggml_backend_t backend             = NULL;  // general backend
     ggml_backend_t clip_backend        = NULL;
     ggml_backend_t control_net_backend = NULL;
+    ggml_backend_t unet_backend        = NULL;
     ggml_backend_t vae_backend         = NULL;
     ggml_type model_wtype              = GGML_TYPE_COUNT;
     ggml_type conditioner_wtype        = GGML_TYPE_COUNT;
@@ -174,6 +175,9 @@ public:
         if (control_net_backend != backend) {
             ggml_backend_free(control_net_backend);
         }
+        if (unet_backend != backend) {
+            ggml_backend_free(unet_backend);
+        }
         if (vae_backend != backend) {
             ggml_backend_free(vae_backend);
         }
@@ -246,7 +250,7 @@ public:
         model_loader.ignore_tensors.insert("cond_stage_model.transformer");
         model_loader.ignore_tensors.insert("first_stage_model");
 
-        bool success = model_loader.load_tensors(tensors, backend);
+        bool success = model_loader.load_tensors(tensors, unet_backend);
         if (!success) {
             LOG_ERROR("load tensors from model loader failed");
             return false;
@@ -306,6 +310,7 @@ public:
                         schedule_t schedule,
                         bool clip_on_cpu,
                         bool control_net_cpu,
+                        bool unet_on_cpu,
                         bool vae_on_cpu,
                         bool diffusion_flash_attn) {
         use_tiny_autoencoder = taesd_path.size() > 0;
@@ -478,22 +483,28 @@ public:
             if (diffusion_flash_attn) {
                 LOG_INFO("Using flash attention in the diffusion model");
             }
+            if (unet_on_cpu && !ggml_backend_is_cpu(backend)) {
+                LOG_INFO("UNET: Using CPU backend");
+                unet_backend = ggml_backend_cpu_init();
+            } else {
+                unet_backend = backend;
+            }
             if (sd_version_is_sd3(version)) {
                 if (diffusion_flash_attn) {
                     LOG_WARN("flash attention in this diffusion model is currently unsupported!");
                 }
                 cond_stage_model = std::make_shared<SD3CLIPEmbedder>(clip_backend, model_loader.tensor_storages_types);
-                diffusion_model  = std::make_shared<MMDiTModel>(backend, model_loader.tensor_storages_types);
+                diffusion_model  = std::make_shared<MMDiTModel>(unet_backend, model_loader.tensor_storages_types);
             } else if (sd_version_is_flux(version)) {
                 cond_stage_model = std::make_shared<FluxCLIPEmbedder>(clip_backend, model_loader.tensor_storages_types);
-                diffusion_model  = std::make_shared<FluxModel>(backend, model_loader.tensor_storages_types, version, diffusion_flash_attn);
+                diffusion_model  = std::make_shared<FluxModel>(unet_backend, model_loader.tensor_storages_types, version, diffusion_flash_attn);
             } else {
                 if (id_embeddings_path.find("v2") != std::string::npos) {
                     cond_stage_model = std::make_shared<FrozenCLIPEmbedderWithCustomWords>(clip_backend, model_loader.tensor_storages_types, embeddings_path, version, PM_VERSION_2);
                 } else {
                     cond_stage_model = std::make_shared<FrozenCLIPEmbedderWithCustomWords>(clip_backend, model_loader.tensor_storages_types, embeddings_path, version);
                 }
-                diffusion_model = std::make_shared<UNetModel>(backend, model_loader.tensor_storages_types, version, diffusion_flash_attn);
+                diffusion_model = std::make_shared<UNetModel>(unet_backend, model_loader.tensor_storages_types, version, diffusion_flash_attn);
             }
 
             //cond_stage_model->alloc_params_buffer();
@@ -638,7 +649,7 @@ public:
                 total_params_vram_size += clip_params_mem_size + pmid_params_mem_size;
             }
 
-            if (ggml_backend_is_cpu(backend)) {
+            if (ggml_backend_is_cpu(unet_backend)) {
                 total_params_ram_size += unet_params_mem_size;
             } else {
                 total_params_vram_size += unet_params_mem_size;
@@ -666,7 +677,7 @@ public:
                 clip_params_mem_size / 1024.0 / 1024.0,
                 ggml_backend_is_cpu(clip_backend) ? "RAM" : "VRAM",
                 unet_params_mem_size / 1024.0 / 1024.0,
-                ggml_backend_is_cpu(backend) ? "RAM" : "VRAM",
+                ggml_backend_is_cpu(unet_backend) ? "RAM" : "VRAM",
                 vae_params_mem_size / 1024.0 / 1024.0,
                 ggml_backend_is_cpu(vae_backend) ? "RAM" : "VRAM",
                 control_net_params_mem_size / 1024.0 / 1024.0,
@@ -795,7 +806,7 @@ public:
         return result < -1;
     }
 
-    void apply_lora(const std::string& lora_name, float multiplier) {
+    void apply_lora(ggml_backend_t& lora_backend, const std::string& lora_name, float multiplier) {
         int64_t t0                 = ggml_time_ms();
         std::string st_file_path   = path_join(lora_model_dir, lora_name + ".safetensors");
         std::string ckpt_file_path = path_join(lora_model_dir, lora_name + ".ckpt");
@@ -808,7 +819,7 @@ public:
             LOG_WARN("can not find %s or %s for lora %s", st_file_path.c_str(), ckpt_file_path.c_str(), lora_name.c_str());
             return;
         }
-        LoraModel lora(backend, file_path);
+        LoraModel lora(lora_backend, file_path);
         if (!lora.load_from_file()) {
             LOG_WARN("load lora tensors from %s failed", file_path.c_str());
             return;
@@ -824,7 +835,7 @@ public:
         LOG_INFO("lora '%s' applied, taking %.2fs", lora_name.c_str(), (t1 - t0) * 1.0f / 1000);
     }
 
-    void apply_loras(const std::unordered_map<std::string, float>& lora_state, bool update_state = false) {
+    void apply_loras(ggml_backend_t& lora_backend, const std::unordered_map<std::string, float>& lora_state, bool update_state = false) {
         int64_t t0 = ggml_time_ms();
         if (lora_state.size() > 0 && model_wtype != GGML_TYPE_F16 && model_wtype != GGML_TYPE_BF16 && model_wtype != GGML_TYPE_F32) {
             LOG_WARN("In quantized models when applying LoRA, the images have poor quality.");
@@ -849,7 +860,7 @@ public:
         }
 
         for (auto& kv : lora_state_diff) {
-            apply_lora(kv.first, kv.second);
+            apply_lora(lora_backend, kv.first, kv.second);
         }
 
         // HACK: This is a hack so that LoRAs can be applied per individual model part.
@@ -1283,6 +1294,7 @@ sd_ctx_t* new_sd_ctx(const char* model_path_c_str,
                      enum schedule_t s,
                      bool keep_clip_on_cpu,
                      bool keep_control_net_cpu,
+                     bool keep_unet_on_cpu,
                      bool keep_vae_on_cpu,
                      bool diffusion_flash_attn) {
     sd_ctx_t* sd_ctx = (sd_ctx_t*)malloc(sizeof(sd_ctx_t));
@@ -1327,6 +1339,7 @@ sd_ctx_t* new_sd_ctx(const char* model_path_c_str,
                                     s,
                                     keep_clip_on_cpu,
                                     keep_control_net_cpu,
+                                    keep_unet_on_cpu,
                                     keep_vae_on_cpu,
                                     diffusion_flash_attn)) {
         delete sd_ctx->sd;
@@ -1508,7 +1521,7 @@ sd_image_t* generate_image(std::string filename,
     if (!sd_ctx->sd->load_clip_l()) {
         abort();
     }
-    sd_ctx->sd->apply_loras(lora_f2m);
+    sd_ctx->sd->apply_loras(sd_ctx->sd->clip_backend, lora_f2m);
     t0               = ggml_time_ms();
     SDCondition cond = sd_ctx->sd->cond_stage_model->get_learned_condition(work_ctx,
                                                                            sd_ctx->sd->n_threads,
@@ -1551,7 +1564,7 @@ sd_image_t* generate_image(std::string filename,
     if (!sd_ctx->sd->load_diffusion_model()) {
         abort();
     }
-    sd_ctx->sd->apply_loras(lora_f2m);
+    sd_ctx->sd->apply_loras(sd_ctx->sd->unet_backend, lora_f2m);
     std::vector<struct ggml_tensor*> final_latents;  // collect latents to decode
     int C = 4;
     if (sd_version_is_sd3(sd_ctx->sd->version)) {

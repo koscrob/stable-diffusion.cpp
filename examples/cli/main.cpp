@@ -127,6 +127,7 @@ struct SDParams {
     bool normalize_input          = false;
     bool clip_on_cpu              = false;
     bool vae_on_cpu               = false;
+    bool unet_on_cpu              = false;
     bool diffusion_flash_attn     = false;
     bool canny_preprocess         = false;
     bool color                    = false;
@@ -163,6 +164,7 @@ void print_params(SDParams params) {
     printf("    control_image:     %s\n", params.control_image_path.c_str());
     printf("    clip on cpu:       %s\n", params.clip_on_cpu ? "true" : "false");
     printf("    controlnet cpu:    %s\n", params.control_net_cpu ? "true" : "false");
+    printf("    unet on cpu:       %s\n", params.unet_on_cpu ? "true" : "false");
     printf("    vae decoder on cpu:%s\n", params.vae_on_cpu ? "true" : "false");
     printf("    diffusion flash attention:%s\n", params.diffusion_flash_attn ? "true" : "false");
     printf("    strength(control): %.2f\n", params.control_strength);
@@ -253,6 +255,7 @@ void print_usage(int argc, const char* argv[]) {
     printf("  --vae-tiling                       process vae in tiles to reduce memory usage\n");
     printf("  --vae-on-cpu                       keep vae in cpu (for low vram)\n");
     printf("  --clip-on-cpu                      keep clip in cpu (for low vram)\n");
+    printf("  --unet-on-cpu                      keep unet in cpu (for low vram)\n");
     printf("  --diffusion-fa                     use flash attention in the diffusion model (for low vram)\n");
     printf("                                     Might lower quality, since it implies converting k and v to f16.\n");
     printf("                                     This might crash if it is not supported by the backend.\n");
@@ -518,6 +521,8 @@ void parse_args(int argc, const char** argv, SDParams& params) {
             params.clip_on_cpu = true;  // will slow down get_learned_condiotion but necessary for low MEM GPUs
         } else if (arg == "--vae-on-cpu") {
             params.vae_on_cpu = true;  // will slow down latent decoding but necessary for low MEM GPUs
+        } else if (arg == "--unet-on-cpu") {
+            params.unet_on_cpu = true;  // will slow down sampling
         } else if (arg == "--diffusion-fa") {
             params.diffusion_flash_attn = true;  // can reduce MEM significantly
         } else if (arg == "--canny") {
@@ -909,6 +914,7 @@ int main(int argc, const char* argv[]) {
                                   params.schedule,
                                   params.clip_on_cpu,
                                   params.control_net_cpu,
+                                  params.unet_on_cpu,
                                   params.vae_on_cpu,
                                   params.diffusion_flash_attn);
 
