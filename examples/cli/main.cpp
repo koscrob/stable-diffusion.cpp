@@ -49,7 +49,7 @@ const std::vector<std::string> sample_method_names = {
 };
 
 // Names of the sigma schedule overrides, same order as sample_schedule in stable-diffusion.h
-const char* schedule_str[] = {
+const std::vector<std::string> schedule_names = {
     "default",
     "discrete",
     "karras",
@@ -177,7 +177,7 @@ void print_params(SDParams params) {
     printf("    width:             %d\n", params.width);
     printf("    height:            %d\n", params.height);
     printf("    sample_method:     %s\n", sample_method_names[params.sample_method].c_str());
-    printf("    schedule:          %s\n", schedule_str[params.schedule]);
+    printf("    schedule:          %s\n", schedule_names[params.schedule].c_str());
     printf("    sample_steps:      %d\n", params.sample_steps);
     printf("    strength(img2img): %.2f\n", params.strength);
     printf("    rng:               %s\n", rng_type_to_str[params.rng_type]);
@@ -247,7 +247,7 @@ void print_usage(int argc, const char* argv[]) {
     printf("  --rng {std_default, cuda}          RNG (default: cuda)\n");
     printf("  -s SEED, --seed SEED               RNG seed (default: 42, use random seed for < 0)\n");
     printf("  -b, --batch-count COUNT            number of images to generate\n");
-    printf("  --schedule {discrete, karras, exponential, ays, gits} Denoiser sigma schedule (default: discrete)\n");
+    printf("  --schedule {%s} Denoiser sigma schedule (default: discrete)\n", join(schedule_names, ", ").c_str());
     printf("  --clip-skip N                      ignore last layers of CLIP network; 1 ignores none, 2 ignores one layer (default: -1)\n");
     printf("                                     <= 0 represents unspecified, will be 1 for SD1.x, 2 for SD2.x\n");
     printf("  --vae-tiling                       process vae in tiles to reduce memory usage\n");
@@ -547,18 +547,14 @@ void parse_args(int argc, const char** argv, SDParams& params) {
                 invalid_arg = true;
                 break;
             }
-            const char* schedule_selected = argv[i];
-            int schedule_found            = -1;
-            for (int d = 0; d < N_SCHEDULES; d++) {
-                if (!strcmp(schedule_selected, schedule_str[d])) {
-                    schedule_found = d;
-                }
-            }
-            if (schedule_found == -1) {
+            const std::string schedule_selected(argv[i]);
+            auto it = std::find(schedule_names.cbegin(), schedule_names.cend(), schedule_selected);
+            if (it == schedule_names.cend()) {
                 invalid_arg = true;
                 break;
             }
-            params.schedule = (schedule_t)schedule_found;
+            auto schedule_index = std::distance(schedule_names.cbegin(), it);
+            params.schedule = (schedule_t)schedule_index;
         } else if (arg == "-s" || arg == "--seed") {
             if (++i >= argc) {
                 invalid_arg = true;
@@ -578,8 +574,8 @@ void parse_args(int argc, const char** argv, SDParams& params) {
                 invalid_arg = true;
                 break;
             }
-            auto sample_method_idx = std::distance(sample_method_names.cbegin(), it);
-            params.sample_method = (sample_method_t)sample_method_idx;
+            auto sample_method_index = std::distance(sample_method_names.cbegin(), it);
+            params.sample_method = (sample_method_t)sample_method_index;
         } else if (arg == "-h" || arg == "--help") {
             print_usage(argc, argv);
             exit(0);
