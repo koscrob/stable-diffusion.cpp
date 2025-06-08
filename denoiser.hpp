@@ -835,8 +835,15 @@ static float vector_norm(const std::vector<float>& vec, float p = 2.0) {
 
 // DPM-Solver. See https://arxiv.org/abs/2206.00927.
 struct DPMSolver {
+    typedef enum {
+        ID_EPS,
+        ID_EPS_R1,
+        ID_EPS_R2,
+        NUM_EPS_CACHE_ENTRIES
+    } eps_cache_id_t;
     ggml_context* work_ctx;
-    denoise_cb_t model; 
+    denoise_cb_t model;
+    std::vector<float> eps_cache[NUM_EPS_CACHE_ENTRIES];
     DPMSolver(ggml_context* work_ctx, denoise_cb_t model)
         : work_ctx(work_ctx), model(model) {
     }
@@ -846,66 +853,75 @@ struct DPMSolver {
     float to_sigma(float t) {
         return exp(-t);
     }
-    ggml_tensor* calc_eps(ggml_tensor* x, float t, int cur_step=-1) {
+    void clear_eps_cache() {
+        for (int i = 0; i < NUM_EPS_CACHE_ENTRIES; ++i) {
+            eps_cache[i].clear();
+        }
+    }
+    std::vector<float> calc_eps(ggml_tensor* x, float t, eps_cache_id_t cache_id, int cur_step=-1) {
+        if (!eps_cache[cache_id].empty()) {
+            return eps_cache[cache_id];
+        }
         float sigma   = to_sigma(t);
         auto denoised = model(x, sigma, cur_step);
-        auto eps      = ggml_dup_tensor(work_ctx, x);
-        for (size_t i = 0; i < ggml_nelements(x); i++) {
-            array_view(eps)[i] = (array_view(x)[i] - array_view(denoised)[i]) / sigma;
+        std::vector<float> eps(ggml_nelements(x));
+        for (size_t i = 0; i < eps.size(); i++) {
+            eps[i] = (array_view(x)[i] - array_view(denoised)[i]) / sigma;
         }
-        return eps;
+        eps_cache[cache_id] = eps;
+        return eps_cache[cache_id];
     }
     ggml_tensor* dpm_solver_1_step(ggml_tensor* x, float t, float t_next, int cur_step = -1) {
         float h = t_next - t;
-        auto eps = calc_eps(x, t, cur_step);
+        auto eps = calc_eps(x, t, ID_EPS, cur_step);
         auto x_1 = ggml_dup_tensor(work_ctx, x);
         float sigma = to_sigma(t_next);
         for (size_t i = 0; i < ggml_nelements(x); i++) {
-            array_view(x_1)[i] = array_view(x)[i] - sigma * expm1(h) * array_view(eps)[i];
+            array_view(x_1)[i] = array_view(x)[i] - sigma * expm1(h) * eps[i];
         }
         return x_1;
     }
     ggml_tensor* dpm_solver_2_step(ggml_tensor* x, float t, float t_next, int cur_step = -1, float r1 = .5f) {
         float h  = t_next - t;
-        auto eps = calc_eps(x, t, cur_step);
+        auto eps = calc_eps(x, t, ID_EPS, cur_step);
         float s1 = t + r1 * h;
         auto u1  = ggml_dup_tensor(work_ctx, x);
         float sigma = to_sigma(s1);
         for (size_t i = 0; i < ggml_nelements(x); i++) {
-            array_view(u1)[i] = array_view(x)[i] - sigma * expm1(r1 * h) * array_view(eps)[i];
+            array_view(u1)[i] = array_view(x)[i] - sigma * expm1(r1 * h) * eps[i];
         }
-        auto eps_r1 = calc_eps(u1, s1, cur_step);
+        auto eps_r1 = calc_eps(u1, s1, ID_EPS_R1, cur_step);
         auto x_2    = ggml_dup_tensor(work_ctx, x);
         sigma       = to_sigma(t_next);
         for (size_t i = 0; i < ggml_nelements(x); i++) {
-            array_view(x_2)[i] = array_view(x)[i] - sigma * expm1(h) * array_view(eps)[i] -
-                sigma / (2 * r1) * expm1(h) * (array_view(eps_r1)[i] - array_view(eps)[i]);
+            array_view(x_2)[i] = array_view(x)[i] - sigma * expm1(h) * eps[i] -
+                sigma / (2 * r1) * expm1(h) * (eps_r1[i] - eps[i]);
         }
         return x_2;
     }
     ggml_tensor* dpm_solver_3_step(ggml_tensor* x, float t, float t_next, int cur_step = -1, float r1 = 1.f / 3.f, float r2 = 2.f / 3.f) {
         float h = t_next - t;
-        auto eps = calc_eps(x, t, cur_step);
+        auto eps = calc_eps(x, t, ID_EPS, cur_step);
         float s1 = t + r1 * h;
         float s2 = t + r2 * h;
         auto u1  = ggml_dup_tensor(work_ctx, x);
         float sigma = to_sigma(s1);
         for (size_t i = 0; i < ggml_nelements(x); i++) {
-            array_view(u1)[i] = array_view(x)[i] - sigma * expm1(r1 * h) * array_view(eps)[i];
+            array_view(u1)[i] = array_view(x)[i] - sigma * expm1(r1 * h) * eps[i];
         }
-        auto eps_r1 = calc_eps(u1, s1, cur_step);
+        auto eps_r1 = calc_eps(u1, s1, ID_EPS_R1, cur_step);
         auto u2     = ggml_dup_tensor(work_ctx, x);
         sigma       = to_sigma(s2);
         for (size_t i = 0; i < ggml_nelements(x); i++) {
-            array_view(u2)[i] = array_view(x)[i] - sigma * expm1(r2 * h) * array_view(eps)[i] -
-                sigma * (r2 / r1) * (expm1(r2 * h) / (r2 * h) - 1) * (array_view(eps_r1)[i] - array_view(eps)[i]);
+            array_view(u2)[i] = array_view(x)[i] - sigma * expm1(r2 * h) * eps[i] -
+                sigma * (r2 / r1) * (expm1(r2 * h) / (r2 * h) - 1) * (eps_r1[i] - eps[i]);
         }
-        auto eps_r2 = calc_eps(u2, s2, cur_step);
+        auto eps_r2 = calc_eps(u2, s2, ID_EPS_R2, cur_step);
         auto x_3    = ggml_dup_tensor(work_ctx, x);
         sigma       = to_sigma(t_next);
         for (size_t i = 0; i < ggml_nelements(x); i++) {
-            array_view(x_3)[i] = array_view(x)[i] - sigma * expm1(h) * array_view(eps)[i] -
-                sigma / r2 * (expm1(h) / h - 1) * (array_view(eps_r2)[i] - array_view(eps)[i]);
+            array_view(x_3)[i] = array_view(x)[i] - sigma * expm1(h) * eps[i] -
+                sigma / r2 * (expm1(h) / h - 1) * (eps_r2[i] - eps[i]);
         }
         return x_3;
     }
@@ -933,6 +949,7 @@ struct DPMSolver {
             orders[m - 1] = nfe % 3;
         }
         for (int i = 0; i < orders.size(); i++) {
+            clear_eps_cache();
             float t = ts[i];
             float t_next = ts[i + 1];
             float t_next_, sd, su;
@@ -994,6 +1011,7 @@ struct DPMSolver {
         auto x_low   = ggml_dup_tensor(work_ctx, x);
         auto x_high  = ggml_dup_tensor(work_ctx, x);
         while (forward ? s < t_end - 1e-5f : s > t_end + 1e-5f) {
+            clear_eps_cache();
             cur_step++;
             float t = forward ? std::min<float>(t_end, s + pid.h) : std::max<float>(t_end, s + pid.h);
             float t_, sd, su;
@@ -1005,12 +1023,12 @@ struct DPMSolver {
                 t_ = t;
                 su = 0.f;
             }
-            auto eps = calc_eps(x, s, cur_step);
+            auto eps = calc_eps(x, s, ID_EPS, cur_step);
             if (order == 2) {
                 x_low  = dpm_solver_1_step(x, s, t_, cur_step);
                 x_high = dpm_solver_2_step(x, s, t_, cur_step);
             } else {
-                x_low = dpm_solver_2_step(x, s, t_, cur_step, 1.f / 3.f);
+                x_low  = dpm_solver_2_step(x, s, t_, cur_step, 1.f / 3.f);
                 x_high = dpm_solver_3_step(x, s, t_, cur_step);
             }
             std::vector<float> delta(ggml_nelements(x));
