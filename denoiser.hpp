@@ -469,6 +469,8 @@ struct FluxFlowDenoiser : public Denoiser {
 
 typedef std::function<ggml_tensor*(ggml_tensor*, float, int)> denoise_cb_t;
 
+typedef std::function<std::vector<float>(float, float)> noise_sampler_func_t;
+
 static inline float* array_view(const ggml_tensor* x) {
     return (float*)x->data;
 }
@@ -505,18 +507,19 @@ static inline void do_euler_step(ggml_tensor* dst, ggml_tensor* x, ggml_tensor* 
     }
 }
 
-// Implements Algorithm 2 (Euler steps) from Karras et al. (2022).
+// Implements Algorithm 1 (Euler steps) from Karras et al. (2022).
 static struct ggml_tensor* sample_euler(
     ggml_context* work_ctx,
     denoise_cb_t model,
     ggml_tensor* x,
     std::vector<float> sigmas, 
-    std::shared_ptr<RNG> rng,
+    noise_sampler_func_t noise_sampler = NULL,
     float s_churn = 0.f, 
     float s_tmin = 0.f, 
     float s_tmax = std::numeric_limits<float>::infinity(), 
     float s_noise = 1.f
 ) {
+    noise_sampler = noise_sampler ? noise_sampler : default_noise_sampler(x);
     auto d = ggml_dup_tensor(work_ctx, x);
     for (int i = 0; i < sigmas.size() - 1; i++) {
         float gamma, sigma_hat;
@@ -530,7 +533,7 @@ static struct ggml_tensor* sample_euler(
             sigma_hat = sigmas[i];
         }
         if (gamma > 0 && s_noise != 0.f) {
-            auto eps = rng->randn(ggml_nelements(x));
+            auto eps = noise_sampler(sigmas[i], sigmas[i + 1]);
             for (int j = 0; j < ggml_nelements(x); j++) {
                 array_view(x)[j] += eps[j] * s_noise * std::sqrt(sigma_hat * sigma_hat - sigmas[i] * sigmas[i]);
             }
@@ -550,7 +553,7 @@ static struct ggml_tensor* sample_euler_ancestral(
     denoise_cb_t model,
     ggml_tensor* x,
     std::vector<float> sigmas,
-    std::function<std::vector<float>(float,float)> noise_sampler = NULL,
+    noise_sampler_func_t noise_sampler = NULL,
     float eta = 1.f,
     float s_noise = 1.f
 ) {
@@ -579,7 +582,7 @@ static struct ggml_tensor* sample_heun(
     denoise_cb_t model,
     ggml_tensor* x,
     std::vector<float> sigmas,
-    std::function<std::vector<float>(float,float)> noise_sampler = NULL,
+    noise_sampler_func_t noise_sampler = NULL,
     float s_churn = 0.f,
     float s_tmin = 0.f,
     float s_tmax = std::numeric_limits<float>::infinity(),
@@ -672,7 +675,7 @@ static struct ggml_tensor* sample_dpm_2_ancestral(
     denoise_cb_t model,
     ggml_tensor* x,
     std::vector<float> sigmas,
-    std::function<std::vector<float>(float, float)> noise_sampler = NULL,
+    noise_sampler_func_t noise_sampler = NULL,
     float eta = 1.f,
     float s_noise = 1.f
 ) {
@@ -913,7 +916,7 @@ struct DPMSolver {
         int nfe,
         float eta = 0.f,
         float s_noise = 1.f,
-        std::function<std::vector<float>(float, float)> noise_sampler = NULL
+        noise_sampler_func_t noise_sampler = NULL
     ) {
         if (t_start <= t_end && eta != 0.f) {
             LOG_ERROR("eta must be 0 for reverse sampling");
@@ -971,7 +974,7 @@ struct DPMSolver {
         float accept_safety = 0.81f,
         float eta = 0.f,
         float s_noise = 1.f,
-        std::function<std::vector<float>(float, float)> noise_sampler = NULL
+        noise_sampler_func_t noise_sampler = NULL
     ) {
         if (order != 2 && order != 3) {
             LOG_ERROR("order should be 2 or 3");
@@ -1037,7 +1040,7 @@ static struct ggml_tensor* sample_dpm_fast(
     float sigma_min,
     float sigma_max,
     int n,
-    std::function<std::vector<float>(float, float)> noise_sampler = NULL,
+    noise_sampler_func_t noise_sampler = NULL,
     float eta = 0.f,
     float s_noise = 1.f
 ) {
@@ -1057,7 +1060,7 @@ static struct ggml_tensor* sample_dpm_adaptive(
     ggml_tensor* x,
     float sigma_min,
     float sigma_max,
-    std::function<std::vector<float>(float, float)> noise_sampler = NULL,
+    noise_sampler_func_t noise_sampler = NULL,
     float eta = 0.,
     float s_noise = 1.f,
     int order = 3,
@@ -1088,7 +1091,7 @@ static struct ggml_tensor* sample_dpmpp_2s_ancestral(
     denoise_cb_t model,
     ggml_tensor* x,
     std::vector<float> sigmas,
-    std::function<std::vector<float>(float, float)> noise_sampler = NULL,
+    noise_sampler_func_t noise_sampler = NULL,
     float eta = 1.f,
     float s_noise = 1.f
 ) {
@@ -1139,7 +1142,7 @@ static struct ggml_tensor* sample_dpmpp_sde(
     denoise_cb_t model,
     ggml_tensor* x,
     std::vector<float> sigmas,
-    std::function<std::vector<float>(float, float)> noise_sampler = NULL,
+    noise_sampler_func_t noise_sampler = NULL,
     float eta = 1.f,
     float s_noise = 1.f,
     float r = .5f
@@ -1210,7 +1213,7 @@ static void sample_k_diffusion(sample_method_t method,
     };
 
     switch (method) {
-        case EULER: sample_euler(work_ctx, model, x, sigmas, rng); break;
+        case EULER: sample_euler(work_ctx, model, x, sigmas, noise_sampler); break;
         case EULER_A: sample_euler_ancestral(work_ctx, model, x, sigmas, noise_sampler); break;
         case HEUN: sample_heun(work_ctx, model, x, sigmas, noise_sampler); break;
         case DPM2: sample_dpm_2(work_ctx, model, x, sigmas, rng); break;
