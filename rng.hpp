@@ -10,26 +10,28 @@ public:
     virtual std::vector<float> randn(uint32_t n) = 0;
 };
 
-class STDDefaultRNG : public RNG {
+template <typename Engine = std::default_random_engine>
+class RNGEngine : public RNG {
 private:
-    std::default_random_engine generator;
+    Engine generator;
 
 public:
+    // Manually seed the generator
     void manual_seed(uint64_t seed) {
-        generator.seed((unsigned int)seed);
+        generator.seed(static_cast<typename Engine::result_type>(seed));
     }
 
+    // Generate 'n' random numbers from a normal distribution
     std::vector<float> randn(uint32_t n) {
         std::vector<float> result;
-        float mean   = 0.0;
-        float stddev = 1.0;
-        std::normal_distribution<float> distribution(mean, stddev);
-        for (uint32_t i = 0; i < n; i++) {
-            float random_number = distribution(generator);
-            result.push_back(random_number);
+        std::normal_distribution<float> distribution(0.f, 1.f);
+        for (uint32_t i = 0; i < n; ++i) {
+            result.push_back(distribution(generator));
         }
         return result;
     }
 };
+
+using STDDefaultRNG = RNGEngine<std::default_random_engine>;
 
 #endif  // __RNG_H__
