@@ -1128,14 +1128,16 @@ static struct ggml_tensor* sample_dpmpp_2s_ancestral(
             float r      = .5f;
             float h      = t_next - t;
             float s      = t + r * h;
-            float s_t    = to_sigma(s) / to_sigma(t);
+            float a      = to_sigma(s) / to_sigma(t);
+            float b      = expm1(-h * r);
             for (size_t j = 0; j < ggml_nelements(x); j++) {
-                array_view(x_2)[j] = s_t * array_view(x)[j] - expm1(-h * r) * array_view(denoised)[j];
+                array_view(x_2)[j] = a * array_view(x)[j] - b * array_view(denoised)[j];
             }
             auto denoised_2 = model(x_2, to_sigma(s), i + 1);
-            s_t             = to_sigma(t_next) / to_sigma(t);
+            a               = to_sigma(t_next) / to_sigma(t);
+            b               = expm1(-h);
             for (size_t j = 0; j < ggml_nelements(x); j++) {
-                array_view(x)[j] = s_t * array_view(x)[j] - expm1(-h) * array_view(denoised_2)[j];
+                array_view(x)[j] = a * array_view(x)[j] - b * array_view(denoised_2)[j];
             }
         }
         // Noise addition
@@ -1189,22 +1191,58 @@ static struct ggml_tensor* sample_dpmpp_sde(
             // Step 1
             auto [sd, su] = get_ancestral_step(to_sigma(t), to_sigma(s), eta);
             float s_      = to_t(sd);
-            float s_t     = to_sigma(s_) / to_sigma(t);
+            float a       = to_sigma(s_) / to_sigma(t);
+            float b       = expm1(t - s_);
             auto noise    = noise_sampler(to_sigma(t), to_sigma(s));
             for (size_t j = 0; j < ggml_nelements(x); j++) {
-                array_view(x_2)[j] = s_t * array_view(x)[j] - expm1(t - s_) * array_view(denoised)[j] + noise[j] * s_noise * su;
+                array_view(x_2)[j] = a * array_view(x)[j] - b * array_view(denoised)[j] + noise[j] * s_noise * su;
             }
             auto denoised_2 = model(x_2, to_sigma(s), i + 1);
             // Step 2
             std::tie(sd, su) = get_ancestral_step(to_sigma(t), to_sigma(t_next), eta);
             float t_next_    = to_t(sd);
-            s_t              = to_sigma(t_next_) / to_sigma(t);
+            a                = to_sigma(t_next_) / to_sigma(t);
+            b                = expm1(t - t_next_);
             noise            = noise_sampler(to_sigma(t), to_sigma(s));
             for (size_t j    = 0; j < ggml_nelements(x); j++) {
                 float denoised_d = (1 - fac) * array_view(denoised)[j] + fac * array_view(denoised_2)[j];
-                array_view(x)[j] = s_t * array_view(x)[j] - expm1(t - t_next_) * denoised_d + noise[j] * s_noise * su;
+                array_view(x)[j] = a * array_view(x)[j] - b * denoised_d + noise[j] * s_noise * su;
             }
         }
+    }
+    return x;
+}
+
+// DPM-Solver++(2M).
+static struct ggml_tensor* sample_dpmpp_2m(
+    ggml_context* work_ctx,
+    denoise_cb_t model,
+    ggml_tensor* x,
+    std::vector<float> sigmas
+) {
+    ggml_tensor* old_denoised = ggml_dup_tensor(work_ctx, x);
+    for (int i = 0; i < sigmas.size() - 1; i++) {
+        auto denoised = model(x, sigmas[i], i + 1);
+        float t       = to_t(sigmas[i]);
+        float t_next  = to_t(sigmas[i + 1]);
+        float h       = t_next - t;
+        float a       = sigmas[i + 1] / sigmas[i];
+        float b       = std::expm1(-h);
+        if (i == 0 || sigmas[i + 1] == 0) {
+            for (size_t j = 0; j < ggml_nelements(x); j++) {
+                array_view(x)[j] = a * array_view(x)[j] - b * array_view(denoised)[j];
+            }
+        } else {
+            float h_last = t - to_t(sigmas[i - 1]);
+            float r      = h_last / h;
+            float r_a    = 1.f + 1.f / (2.f * r);
+            float r_b    = 1.f / (2.f * r);
+            for (size_t j = 0; j < ggml_nelements(x); j++) {
+                float denoised_d = r_a * array_view(denoised)[j] - r_b * array_view(old_denoised)[j];
+                array_view(x)[j] = a * array_view(x)[j] - b * denoised_d;
+            }
+        }
+        std::memcpy(array_view(old_denoised), array_view(denoised), ggml_nelements(x) * ggml_element_size(x));
     }
     return x;
 }
@@ -1234,45 +1272,7 @@ static void sample_k_diffusion(sample_method_t method,
         case DPM_ADAPTIVE: sample_dpm_adaptive(work_ctx, model, x, sigmas[sigmas.size() - (sigmas.back() == 0.f ? 2 : 1)], sigmas[0], noise_sampler); break;
         case DPMPP2S_A: sample_dpmpp_2s_ancestral(work_ctx, model, x, sigmas, noise_sampler); break;
         case DPMPP_SDE: sample_dpmpp_sde(work_ctx, model, x, sigmas, noise_sampler); break;
-        case DPMPP2M:  // DPM++ (2M) from Karras et al (2022)
-        {
-            struct ggml_tensor* old_denoised = ggml_dup_tensor(work_ctx, x);
-
-            auto t_fn = [](float sigma) -> float { return -log(sigma); };
-
-            for (int i = 0; i < steps; i++) {
-                // denoise
-                ggml_tensor* denoised = model(x, sigmas[i], i + 1);
-
-                float t                 = t_fn(sigmas[i]);
-                float t_next            = t_fn(sigmas[i + 1]);
-                float h                 = t_next - t;
-                float a                 = sigmas[i + 1] / sigmas[i];
-                float b                 = exp(-h) - 1.f;
-                float* vec_x            = (float*)x->data;
-                float* vec_denoised     = (float*)denoised->data;
-                float* vec_old_denoised = (float*)old_denoised->data;
-
-                if (i == 0 || sigmas[i + 1] == 0) {
-                    // Simpler step for the edge cases
-                    for (int j = 0; j < ggml_nelements(x); j++) {
-                        vec_x[j] = a * vec_x[j] - b * vec_denoised[j];
-                    }
-                } else {
-                    float h_last = t - t_fn(sigmas[i - 1]);
-                    float r      = h_last / h;
-                    for (int j = 0; j < ggml_nelements(x); j++) {
-                        float denoised_d = (1.f + 1.f / (2.f * r)) * vec_denoised[j] - (1.f / (2.f * r)) * vec_old_denoised[j];
-                        vec_x[j]         = a * vec_x[j] - b * denoised_d;
-                    }
-                }
-
-                // old_denoised = denoised
-                for (int j = 0; j < ggml_nelements(x); j++) {
-                    vec_old_denoised[j] = vec_denoised[j];
-                }
-            }
-        } break;
+        case DPMPP2M: sample_dpmpp_2m(work_ctx, model, x, sigmas); break;
         case DPMPP2Mv2:  // Modified DPM++ (2M) from https://github.com/AUTOMATIC1111/stable-diffusion-webui/discussions/8457
         {
             struct ggml_tensor* old_denoised = ggml_dup_tensor(work_ctx, x);
