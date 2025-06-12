@@ -47,6 +47,7 @@ enum sample_method_t {
     DPMPP_2M,
     DPMPP_2M_v2,
     DPMPP_2M_SDE,
+    DPMPP_3M_SDE,
     IPNDM,
     IPNDM_V,
     LCM,
