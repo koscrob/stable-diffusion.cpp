@@ -1247,6 +1247,46 @@ static struct ggml_tensor* sample_dpmpp_2m(
     return x;
 }
 
+// Modified DPM++ (2M) from https://github.com/AUTOMATIC1111/stable-diffusion-webui/discussions/8457
+static struct ggml_tensor* sample_dpmpp_2m_v2(
+    ggml_context* work_ctx,
+    denoise_cb_t model,
+    ggml_tensor* x,
+    std::vector<float> sigmas
+) {
+    ggml_tensor* old_denoised = ggml_dup_tensor(work_ctx, x);
+    for (int i = 0; i < sigmas.size() - 1; i++) {
+        auto denoised = model(x, sigmas[i], i + 1);
+        float t       = to_t(sigmas[i]);
+        float t_next  = to_t(sigmas[i + 1]);
+        float h       = t_next - t;
+        float s_min = std::min<float>(sigmas[i], sigmas[i + 1]);
+        float s_max = std::max<float>(sigmas[i], sigmas[i + 1]);
+        float a       = s_min / s_max;
+        if (i == 0 || sigmas[i + 1] == 0) {
+            float b       = std::expm1(-h);
+            for (size_t j = 0; j < ggml_nelements(x); j++) {
+                array_view(x)[j] = a * array_view(x)[j] - b * array_view(denoised)[j];
+            }
+        } else {
+            float h_last = t - to_t(sigmas[i - 1]);
+            float h_min  = std::min<float>(h_last, h);
+            float h_max  = std::max<float>(h_last, h);
+            float h_d    = (h_max + h_min) / 2.f;
+            float r      = h_max / h_min;
+            float r_a    = 1.f + 1.f / (2.f * r);
+            float r_b    = 1.f / (2.f * r);
+            float b      = std::expm1(-h_d);
+            for (size_t j = 0; j < ggml_nelements(x); j++) {
+                float denoised_d = r_a * array_view(denoised)[j] - r_b * array_view(old_denoised)[j];
+                array_view(x)[j] = a * array_view(x)[j] - b * denoised_d;
+            }
+        }
+        std::memcpy(array_view(old_denoised), array_view(denoised), ggml_nelements(x) * ggml_element_size(x));
+    }
+    return x;
+}
+
 // k diffusion reverse ODE: dx = (x - D(x;\sigma)) / \sigma dt; \sigma(t) = t
 static void sample_k_diffusion(sample_method_t method,
                                denoise_cb_t model,
@@ -1273,49 +1313,7 @@ static void sample_k_diffusion(sample_method_t method,
         case DPMPP2S_A: sample_dpmpp_2s_ancestral(work_ctx, model, x, sigmas, noise_sampler); break;
         case DPMPP_SDE: sample_dpmpp_sde(work_ctx, model, x, sigmas, noise_sampler); break;
         case DPMPP2M: sample_dpmpp_2m(work_ctx, model, x, sigmas); break;
-        case DPMPP2Mv2:  // Modified DPM++ (2M) from https://github.com/AUTOMATIC1111/stable-diffusion-webui/discussions/8457
-        {
-            struct ggml_tensor* old_denoised = ggml_dup_tensor(work_ctx, x);
-
-            auto t_fn = [](float sigma) -> float { return -log(sigma); };
-
-            for (int i = 0; i < steps; i++) {
-                // denoise
-                ggml_tensor* denoised = model(x, sigmas[i], i + 1);
-
-                float t                 = t_fn(sigmas[i]);
-                float t_next            = t_fn(sigmas[i + 1]);
-                float h                 = t_next - t;
-                float a                 = sigmas[i + 1] / sigmas[i];
-                float* vec_x            = (float*)x->data;
-                float* vec_denoised     = (float*)denoised->data;
-                float* vec_old_denoised = (float*)old_denoised->data;
-
-                if (i == 0 || sigmas[i + 1] == 0) {
-                    // Simpler step for the edge cases
-                    float b = exp(-h) - 1.f;
-                    for (int j = 0; j < ggml_nelements(x); j++) {
-                        vec_x[j] = a * vec_x[j] - b * vec_denoised[j];
-                    }
-                } else {
-                    float h_last = t - t_fn(sigmas[i - 1]);
-                    float h_min  = std::min(h_last, h);
-                    float h_max  = std::max(h_last, h);
-                    float r      = h_max / h_min;
-                    float h_d    = (h_max + h_min) / 2.f;
-                    float b      = exp(-h_d) - 1.f;
-                    for (int j = 0; j < ggml_nelements(x); j++) {
-                        float denoised_d = (1.f + 1.f / (2.f * r)) * vec_denoised[j] - (1.f / (2.f * r)) * vec_old_denoised[j];
-                        vec_x[j]         = a * vec_x[j] - b * denoised_d;
-                    }
-                }
-
-                // old_denoised = denoised
-                for (int j = 0; j < ggml_nelements(x); j++) {
-                    vec_old_denoised[j] = vec_denoised[j];
-                }
-            }
-        } break;
+        case DPMPP2Mv2: sample_dpmpp_2m_v2(work_ctx, model, x, sigmas); break;
         case IPNDM:  // iPNDM sampler from https://github.com/zju-pi/diff-sampler/tree/main/diff-solvers-main
         {
             int max_order       = 4;
