@@ -41,6 +41,7 @@ const std::vector<std::string> sample_method_names = {
     "dpmpp_sde",
     "dpmpp2m",
     "dpmpp2mv2",
+    "dpmpp_2m_sde",
     "ipndm",
     "ipndm_v",
     "lcm",

@@ -1220,7 +1220,7 @@ static struct ggml_tensor* sample_dpmpp_2m(
     ggml_tensor* x,
     std::vector<float> sigmas
 ) {
-    ggml_tensor* old_denoised = ggml_dup_tensor(work_ctx, x);
+    auto old_denoised = ggml_dup_tensor(work_ctx, x);
     for (int i = 0; i < sigmas.size() - 1; i++) {
         auto denoised = model(x, sigmas[i], i + 1);
         float t       = to_t(sigmas[i]);
@@ -1254,7 +1254,7 @@ static struct ggml_tensor* sample_dpmpp_2m_v2(
     ggml_tensor* x,
     std::vector<float> sigmas
 ) {
-    ggml_tensor* old_denoised = ggml_dup_tensor(work_ctx, x);
+    auto old_denoised = ggml_dup_tensor(work_ctx, x);
     for (int i = 0; i < sigmas.size() - 1; i++) {
         auto denoised = model(x, sigmas[i], i + 1);
         float t       = to_t(sigmas[i]);
@@ -1287,6 +1287,84 @@ static struct ggml_tensor* sample_dpmpp_2m_v2(
     return x;
 }
 
+typedef enum solver_type_t {
+    SOLVER_HEUN,
+    SOLVER_MIDPOINT
+};
+
+// DPM-Solver++(2M) SDE.
+static struct ggml_tensor* sample_dpmpp_2m_sde(
+    ggml_context* work_ctx,
+    denoise_cb_t model,
+    ggml_tensor* x,
+    std::vector<float> sigmas,
+    solver_type_t solver_type = SOLVER_MIDPOINT,
+    noise_sampler_func_t noise_sampler = NULL,
+    float eta = 1.f,
+    float s_noise = 1.f
+) {
+    if (solver_type != SOLVER_HEUN && solver_type != SOLVER_MIDPOINT) {
+        LOG_ERROR("solver_type must be SOLVER_HEUN or SOLVER_MIDPOINT");
+        solver_type = SOLVER_MIDPOINT;
+    }
+    float sigma_min = std::numeric_limits<float>::max();
+    for (float sigma : sigmas) {
+        if (sigma > 0) {
+            sigma_min = std::min<float>(sigma_min, sigma);
+        }
+    }
+    float sigma_max = sigma_max = *std::max_element(sigmas.begin(), sigmas.end());
+    // TODO: Implement BrownianTreeNoiseSampler
+    // noise_sampler = BrownianTreeNoiseSampler(x, sigma_min, sigma_max) if noise_sampler is None else noise_sampler
+    noise_sampler = noise_sampler ? noise_sampler : default_noise_sampler(x);
+
+    auto old_denoised = ggml_dup_tensor(work_ctx, x);
+    float h_last      = 0;
+
+    for (int i = 0; i < sigmas.size() - 1; i++) {
+        auto denoised = model(x, sigmas[i], i + 1);
+        if (sigmas[i + 1] == 0.f) {
+            // Denoising step
+            std::memcpy(array_view(x), array_view(denoised), ggml_nelements(x) * ggml_element_size(x));
+        } else {
+            // DPM-Solver++(2M) SDE
+            float t      = to_t(sigmas[i]);
+            float t_next = to_t(sigmas[i + 1]);
+            float h      = t_next - t;
+            float eta_h  = eta * h;
+            float a      = sigmas[i + 1] / sigmas[i] * std::exp(-eta_h);
+            float b      = -std::expm1(-h - eta_h);
+            for (size_t j = 0; j < ggml_nelements(x); j++) {
+                array_view(x)[j] = a * array_view(x)[j] + b * array_view(denoised)[j];
+            }
+            if (i != 0) {
+                float r = h_last / h;
+                if (solver_type == SOLVER_HEUN) {
+                    b = (-std::expm1(-h - eta_h) / (-h - eta_h) + 1.f) * (1.f / r);
+                    for (size_t j = 0; j < ggml_nelements(x); j++) {
+                        array_view(x)[j] += b * (array_view(denoised)[j] - array_view(old_denoised)[j]);
+                    }
+                } else if (solver_type == SOLVER_MIDPOINT) {
+                    b = 0.5 * -std::expm1(-h - eta_h) * (1.f / r);
+                    for (size_t j = 0; j < ggml_nelements(x); j++) {
+                        array_view(x)[j] += b * (array_view(denoised)[j] - array_view(old_denoised)[j]);
+                    }
+                }
+            }
+            if (eta != 0.f && s_noise != 0.f) {
+                auto noise = noise_sampler(sigmas[i], sigmas[i + 1]);
+                float s    = sigmas[i + 1] * std::sqrt(-std::expm1(-2 * eta_h)) * s_noise;
+                for (size_t j = 0; j < ggml_nelements(x); j++) {
+                    array_view(x)[j] += s * noise[j];
+                }
+            }
+            std::memcpy(array_view(old_denoised), array_view(denoised), ggml_nelements(x) * ggml_element_size(x));
+            h_last = h;
+        }
+    }
+    return x;
+}
+
 // k diffusion reverse ODE: dx = (x - D(x;\sigma)) / \sigma dt; \sigma(t) = t
 static void sample_k_diffusion(sample_method_t method,
                                denoise_cb_t model,
@@ -1310,10 +1388,11 @@ static void sample_k_diffusion(sample_method_t method,
         case LMS: sample_lms(work_ctx, model, x, sigmas); break;
         case DPM_FAST: sample_dpm_fast(work_ctx, model, x, sigmas[sigmas.size() - (sigmas.back() == 0.f ? 2 : 1)], sigmas[0], sigmas.size() - 1, noise_sampler); break;
         case DPM_ADAPTIVE: sample_dpm_adaptive(work_ctx, model, x, sigmas[sigmas.size() - (sigmas.back() == 0.f ? 2 : 1)], sigmas[0], noise_sampler); break;
-        case DPMPP2S_A: sample_dpmpp_2s_ancestral(work_ctx, model, x, sigmas, noise_sampler); break;
+        case DPMPP_2S_A: sample_dpmpp_2s_ancestral(work_ctx, model, x, sigmas, noise_sampler); break;
         case DPMPP_SDE: sample_dpmpp_sde(work_ctx, model, x, sigmas, noise_sampler); break;
-        case DPMPP2M: sample_dpmpp_2m(work_ctx, model, x, sigmas); break;
-        case DPMPP2Mv2: sample_dpmpp_2m_v2(work_ctx, model, x, sigmas); break;
+        case DPMPP_2M: sample_dpmpp_2m(work_ctx, model, x, sigmas); break;
+        case DPMPP_2M_v2: sample_dpmpp_2m_v2(work_ctx, model, x, sigmas); break;
+        case DPMPP_2M_SDE: sample_dpmpp_2m_sde(work_ctx, model, x, sigmas, SOLVER_MIDPOINT, noise_sampler); break;
         case IPNDM:  // iPNDM sampler from https://github.com/zju-pi/diff-sampler/tree/main/diff-solvers-main
         {
             int max_order       = 4;
