@@ -1818,7 +1818,7 @@ bool ModelLoader::load_tensors(on_new_tensor_cb_t on_new_tensor_cb, ggml_backend
             }
 
             // TODO: Only convert float16 to bf16 if the CPU does not support half->float conversion.
-            if (ggml_backend_buffer_is_host(dst_tensor->buffer) && tensor_storage.type == GGML_TYPE_F16) {
+            if (tensor_storage.type == GGML_TYPE_F16 && (dst_tensor->buffer == NULL || ggml_backend_buffer_is_host(dst_tensor->buffer))) {
                 dst_tensor->type = GGML_TYPE_BF16;
             }
 
