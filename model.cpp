@@ -1045,9 +1045,9 @@ ggml_tensor* load_latent_from_safetensors(ggml_context* ctx, const std::string& 
             // HACK: Apply scaling_factor=0.18215 as that's what ComfyUI does.
             // See: https://github.com/huggingface/diffusers/issues/437
             float scaling_factor = 0.18215f;
-            int64_t num_floats = ggml_nbytes(tensor) / 4;
-            for (int64_t i = 0; i < num_floats; i += 1) {
-               reinterpret_cast<float*>(tensor->data)[i] *= scaling_factor;
+            int64_t nelements = ggml_nelements(tensor);
+            for (int64_t i = 0; i < nelements; i += 1) {
+                ggml_set_f32_1d(tensor, i, ggml_get_f32_1d(tensor, i) * scaling_factor);
             }
             return tensor;
         }
