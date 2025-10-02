@@ -630,7 +630,9 @@ __STATIC_INLINE__ void sd_tiling(ggml_tensor* input, ggml_tensor* output, const 
     ggml_tensor* input_tile  = ggml_new_tensor_4d(tiles_ctx, input->type, tile_size, tile_size, input->ne[2], 1);
     ggml_tensor* output_tile = ggml_new_tensor_4d(tiles_ctx, output->type, tile_size * scale, tile_size * scale, output->ne[2], 1);
     on_processing(input_tile, NULL, true);
-    int num_tiles = (int)((ceil((float)input_width / non_tile_overlap) - 1) * (ceil((float)input_height / non_tile_overlap) - 1));
+    int num_tiles_x = ((input_width  - tile_size + non_tile_overlap - 1) / non_tile_overlap) + 1;
+    int num_tiles_y = ((input_height - tile_size + non_tile_overlap - 1) / non_tile_overlap) + 1;
+    int num_tiles   = num_tiles_x * num_tiles_y;
     LOG_INFO("processing %i tiles", num_tiles);
     int tile_count = 0;
     bool last_y = false, last_x = false;
