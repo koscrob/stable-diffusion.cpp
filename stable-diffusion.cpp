@@ -1227,12 +1227,13 @@ public:
             } else {
                 ggml_tensor_scale_input(x);
             }
-            if (vae_tiling && decode && x->ne[0] >= 32 && x->ne[1] >= 32) {  // TODO: support tiling vae encode
-                // split latent in 32x32 tiles and compute in several steps
+            const int tile_size = 40;
+            if (vae_tiling && decode && x->ne[0] >= tile_size && x->ne[1] >= tile_size) {  // TODO: support tiling vae encode
+                // split latent in tile_size*tile_size tiles and compute in several steps
                 auto on_tiling = [&](ggml_tensor* in, ggml_tensor* out, bool init) {
                     first_stage_model->compute(n_threads, in, decode, &out);
                 };
-                sd_tiling(x, result, 8, 32, 0.5f, on_tiling);
+                sd_tiling(x, result, 8, tile_size, 0.25f, on_tiling);
             } else {
                 first_stage_model->compute(n_threads, x, decode, &result);
             }
