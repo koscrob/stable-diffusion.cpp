@@ -964,6 +964,98 @@ ggml_type str_to_ggml_type(const std::string& dtype) {
     return ttype;
 }
 
+ggml_tensor* load_latent_from_safetensors(ggml_context* ctx, const std::string& file_path) {
+    std::ifstream file(file_path, std::ios::binary);
+    if (!file.is_open()) {
+        LOG_ERROR("failed to open '%s'", file_path.c_str());
+        return NULL;
+    }
+
+    // get file size
+    file.seekg(0, file.end);
+    size_t file_size_ = file.tellg();
+    file.seekg(0, file.beg);
+
+    // read header size
+    if (file_size_ <= ST_HEADER_SIZE_LEN) {
+        LOG_ERROR("invalid safetensor file '%s'", file_path.c_str());
+        return NULL;
+    }
+
+    uint8_t header_size_buf[ST_HEADER_SIZE_LEN];
+    file.read((char*)header_size_buf, ST_HEADER_SIZE_LEN);
+    if (!file) {
+        LOG_ERROR("read safetensors header size failed: '%s'", file_path.c_str());
+        return NULL;
+    }
+
+    size_t header_size_ = read_u64(header_size_buf);
+    if (header_size_ >= file_size_) {
+        LOG_ERROR("invalid safetensor file '%s'", file_path.c_str());
+        return NULL;
+    }
+
+    // read header
+    std::vector<char> header_buf;
+    header_buf.resize(header_size_ + 1);
+    header_buf[header_size_] = '\0';
+    file.read(header_buf.data(), header_size_);
+    if (!file) {
+        LOG_ERROR("read safetensors header failed: '%s'", file_path.c_str());
+        return NULL;
+    }
+
+    nlohmann::json header_ = nlohmann::json::parse(header_buf.data());
+
+    for (auto& item : header_.items()) {
+        std::string name           = item.key();
+        nlohmann::json tensor_info = item.value();
+        // LOG_DEBUG("%s %s\n", name.c_str(), tensor_info.dump().c_str());
+
+        // if (name == "__metadata__") continue;
+
+        if (name == "latent_tensor") {
+            std::string dtype    = tensor_info["dtype"];
+            nlohmann::json shape = tensor_info["shape"];
+
+            size_t begin = tensor_info["data_offsets"][0].get<size_t>();
+            size_t end   = tensor_info["data_offsets"][1].get<size_t>();
+
+            ggml_type type = str_to_ggml_type(dtype);
+            if (type == GGML_TYPE_COUNT) {
+                LOG_ERROR("unsupported dtype '%s' (tensor '%s')", dtype.c_str(), name.c_str());
+                return NULL;
+            }
+
+            if (shape.size() > SD_MAX_DIMS) {
+                LOG_ERROR("invalid tensor '%s'", name.c_str());
+                return NULL;
+            }
+
+            int n_dims              = (int)shape.size();
+            int64_t ne[SD_MAX_DIMS] = {1, 1, 1, 1, 1};
+            for (int i = 0; i < n_dims; i++) {
+                ne[i] = shape[i].get<int64_t>();
+            }
+
+            ggml_tensor* tensor = ggml_new_tensor_4d(ctx, (ggml_type)type, ne[3], ne[2], ne[1], ne[0]);
+            const size_t bpe    = ggml_type_size(ggml_type(type));
+            file.read(reinterpret_cast<char*>(tensor->data), ggml_nbytes(tensor));
+            // TODO: Properly implement scaling_factor for models other than SD1.5 too.
+            // HACK: Apply scaling_factor=0.18215 as that's what ComfyUI does.
+            // See: https://github.com/huggingface/diffusers/issues/437
+            float scaling_factor = 0.18215f;
+            int64_t num_floats = ggml_nbytes(tensor) / 4;
+            for (int64_t i = 0; i < num_floats; i += 1) {
+               reinterpret_cast<float*>(tensor->data)[i] *= scaling_factor;
+            }
+            return tensor;
+        }
+    }
+
+    return NULL;
+}
+
 // https://huggingface.co/docs/safetensors/index
 bool ModelLoader::init_from_safetensors_file(const std::string& file_path, const std::string& prefix) {
     LOG_DEBUG("init from '%s'", file_path.c_str());

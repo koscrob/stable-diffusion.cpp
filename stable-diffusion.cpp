@@ -1734,7 +1734,13 @@ sd_image_t* latent2img(const char* filename, sd_ctx_t* sd_ctx) {
         return NULL;
     }
 
-    ggml_tensor* latent = load_tensor_from_file(work_ctx, std::string(filename));
+    ggml_tensor* latent;
+    if (is_safetensors_file(std::string(filename))) {
+        latent = load_latent_from_safetensors(work_ctx, std::string(filename));
+    }
+    else {
+        latent = load_tensor_from_file(work_ctx, std::string(filename));
+    }
     LOG_INFO("Latent loaded from: \"%s\"", filename);
 
     uint32_t width  = latent->ne[0] * 8;

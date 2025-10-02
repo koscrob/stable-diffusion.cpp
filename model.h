@@ -227,4 +227,7 @@ public:
     static std::string load_t5_tokenizer_json();
 };
 
+bool is_safetensors_file(const std::string& file_path);
+ggml_tensor* load_latent_from_safetensors(ggml_context* ctx, const std::string& file_path);
+
 #endif  // __MODEL_H__
